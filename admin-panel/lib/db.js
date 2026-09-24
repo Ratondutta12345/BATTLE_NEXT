@@ -1,11 +1,11 @@
 const mysql = require('mysql2/promise');
 
 const {
-  DATABASE_HOST = '127.0.0.1',
-  DATABASE_PORT = 3306,
-  DATABASE_USER = 'root',
-  DATABASE_PASSWORD = '',
-  DATABASE_NAME = 'myapp_db',
+  DATABASE_HOST = process.env.MYSQLHOST || '127.0.0.1',
+  DATABASE_PORT = process.env.MYSQLPORT || 3306,
+  DATABASE_USER = process.env.MYSQLUSER || 'root',
+  DATABASE_PASSWORD = process.env.MYSQLPASSWORD || '',
+  DATABASE_NAME = process.env.MYSQLDATABASE || 'myapp_db',
 } = process.env;
 
 const pool = mysql.createPool({
