@@ -2,17 +2,16 @@ const mysql = require('mysql2/promise');
 
 const { DATABASE_URL } = process.env;
 const {
-
+  MYSQLHOST,
+  MYSQLPORT,
+  MYSQLUSER,
+  MYSQLPASSWORD,
+  MYSQLDATABASE,
   DATABASE_HOST = '127.0.0.1',
-
   DATABASE_PORT = 3306,
-
   DATABASE_USER = 'root',
-
   DATABASE_PASSWORD = '',
-
   DATABASE_NAME = 'myapp_db',
-
 } = process.env;
 
 const databaseConfig = DATABASE_URL
@@ -28,21 +27,21 @@ const databaseConfig = DATABASE_URL
     };
   })()
   : {
-    host: DATABASE_HOST,
-    port: Number(DATABASE_PORT),
-    user: DATABASE_USER,
-    password: DATABASE_PASSWORD,
-    database: DATABASE_NAME,
+    host: MYSQLHOST || DATABASE_HOST,
+    port: Number(MYSQLPORT || DATABASE_PORT),
+    user: MYSQLUSER || DATABASE_USER,
+    password: MYSQLPASSWORD || DATABASE_PASSWORD,
+    database: MYSQLDATABASE || DATABASE_NAME,
   };
 
 const pool = mysql.createPool({
   ...databaseConfig,
+  ssl: {
+    rejectUnauthorized: false,
+  },
   waitForConnections: true,
-
   connectionLimit: 10,
-
   queueLimit: 0,
-
 });
 
 module.exports = pool;
