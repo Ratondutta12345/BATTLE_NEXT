@@ -51,7 +51,7 @@ router.post('/contacts', requireAdminKey, async (req, res) => {
   const type = String(req.body.type || '').trim().toLowerCase();
   const label = String(req.body.label || type).trim();
   const value = String(req.body.value || '').trim();
-  if (!['phone', 'telegram', 'email'].includes(type) || !value) return res.status(400).json({ error: 'Contact type and value are required.' });
+  if (!['phone', 'telegram', 'whatsapp', 'email'].includes(type) || !value) return res.status(400).json({ error: 'Contact type and value are required.' });
   try {
     const [result] = await pool.query(
       'INSERT INTO contact_options (contact_type, label, contact_value, display_order, is_active) VALUES (?, ?, ?, ?, ?)',
@@ -73,7 +73,7 @@ router.put('/contacts/:id', requireAdminKey, async (req, res) => {
     if (!existing[0]) return res.status(404).json({ error: 'Contact option not found' });
     const current = existing[0];
     const type = req.body.type ? String(req.body.type).trim().toLowerCase() : current.contact_type;
-    if (!['phone', 'telegram', 'email'].includes(type)) return res.status(400).json({ error: 'Invalid contact type' });
+    if (!['phone', 'telegram', 'whatsapp', 'email'].includes(type)) return res.status(400).json({ error: 'Invalid contact type' });
     await pool.query(
       'UPDATE contact_options SET contact_type = ?, label = ?, contact_value = ?, display_order = ?, is_active = ? WHERE id = ?',
       [type, req.body.label !== undefined ? String(req.body.label).trim() : current.label, req.body.value !== undefined ? String(req.body.value).trim() : current.contact_value, req.body.displayOrder !== undefined ? Number(req.body.displayOrder) : current.display_order, req.body.isActive !== undefined ? (req.body.isActive ? 1 : 0) : current.is_active, id],

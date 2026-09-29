@@ -17,16 +17,29 @@ function getConfiguredBaseUrl(): string | undefined {
   return undefined;
 }
 
-function getDevHost(): string {
-  const configured = getConfiguredBaseUrl();
-  if (configured) {
-    return configured;
-  }
-
-  const hostUri =
+function getExpoHostUri(): string | undefined {
+  return (
     Constants.expoGoConfig?.debuggerHost ??
     Constants.expoConfig?.hostUri ??
-    Constants.manifest2?.extra?.expoGo?.debuggerHost;
+    Constants.manifest2?.extra?.expoGo?.debuggerHost
+  );
+}
+
+function getDevHost(): string {
+  const configured = getConfiguredBaseUrl();
+  const hostUri = getExpoHostUri();
+
+  if (configured) {
+    const localUrl = /^(https?:\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i.exec(configured);
+    if (Platform.OS === 'android' && localUrl) {
+      const expoHostname = hostUri?.split(':')[0];
+      const hostname = expoHostname && expoHostname !== 'localhost' && expoHostname !== '127.0.0.1'
+        ? expoHostname
+        : '10.0.2.2';
+      return `${localUrl[1]}${hostname}${localUrl[3] ?? `:${DEV_PORT}`}${localUrl[4] ?? ''}`;
+    }
+    return configured;
+  }
 
   if (hostUri) {
     const hostname = hostUri.split(':')[0];
@@ -53,9 +66,11 @@ export const API_ENDPOINTS = {
   activeAnnouncements: `${API_BASE_URL}/api/announcements/active`,
   notifications: (userId: number) => `${API_BASE_URL}/api/notifications?userId=${userId}`,
   markNotificationsRead: `${API_BASE_URL}/api/notifications/read-all`,
+  registerPushToken: `${API_BASE_URL}/api/notifications/register-device`,
+  unregisterPushToken: `${API_BASE_URL}/api/notifications/unregister-device`,
   wallet: (userId: number) => `${API_BASE_URL}/api/wallet/${userId}`,
-  walletPaymentConfig: `${API_BASE_URL}/api/wallet/payment-config`,
-  walletDepositRequest: (userId: number) => `${API_BASE_URL}/api/wallet/${userId}/deposit-requests`,
+  walletZapupiCreate: `${API_BASE_URL}/api/wallet/create-zapupi-order`,
+  walletZapupiStatus: (orderId: string, userId: number) => `${API_BASE_URL}/api/wallet/check-status?orderId=${encodeURIComponent(orderId)}&userId=${userId}`,
   walletWithdrawStatus: (userId: number) => `${API_BASE_URL}/api/wallet/${userId}/withdraw-status`,
   walletWithdrawRequest: (userId: number) => `${API_BASE_URL}/api/wallet/${userId}/withdraw-requests`,
   walletTransactions: (userId: number) => `${API_BASE_URL}/api/wallet/${userId}/transactions`,
@@ -66,9 +81,10 @@ export const API_ENDPOINTS = {
   activeGames: `${API_BASE_URL}/api/games/active`,
   game: (id: number) => `${API_BASE_URL}/api/games/${id}`,
   activeMatches: (gameId: number) => `${API_BASE_URL}/api/matches/active?gameId=${gameId}`,
-  matchesByStatus: (gameId: number, status: string) => `${API_BASE_URL}/api/matches/by-status?gameId=${gameId}&status=${status}`,
+  matchesByStatus: (gameId: number, status: string, userId?: number) => `${API_BASE_URL}/api/matches/by-status?gameId=${gameId}&status=${status}${userId ? `&userId=${userId}` : ''}`,
   match: (id: number, userId?: number) => `${API_BASE_URL}/api/matches/${id}${userId ? `?userId=${userId}` : ''}`,
   joinMatch: (id: number) => `${API_BASE_URL}/api/matches/${id}/join`,
+  updateMatchEntry: (id: number) => `${API_BASE_URL}/api/matches/${id}/entry`,
 } as const;
 
 export type AuthUser = {
@@ -123,12 +139,14 @@ export type Match = {
   gameVersion: string;
   name: string;
   matchSchedule: string;
+  createdAt?: string;
   prizePool: number;
   perKill: number;
   teamType: string;
   entryFee: number;
   totalPlayers: number;
   joinedPlayers: number;
+  userEntryCount?: number;
   map: string;
   status: string;
   bannerTitle?: string | null;
@@ -142,6 +160,7 @@ export type Match = {
   roomPassword?: string | null;
   participants?: Array<{
     id: number;
+    userId?: number;
     username?: string | null;
     name?: string | null;
     inGameName?: string | null;

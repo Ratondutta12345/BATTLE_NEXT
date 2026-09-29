@@ -1,6 +1,7 @@
 const express = require('express');
 const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
+const { sendPushNotification } = require('../lib/firebasePush');
 
 const router = express.Router();
 
@@ -83,7 +84,7 @@ function mapMatch(row) {
     gameVersion: row.game_version,
     eventName: row.event_name,
     matchUrl: row.match_url,
-    matchSchedule: row.match_schedule,
+    matchSchedule: row.match_schedule_utc || row.match_schedule,
     prizePool: Number(row.prize_pool ?? 0),
     perKill: Number(row.per_kill ?? 0),
     teamType: row.team_type,
@@ -119,7 +120,7 @@ const baseMatchSelect = `
     m.game_version,
     m.event_name,
     m.match_url,
-    m.match_schedule,
+    DATE_FORMAT(m.match_schedule, '%Y-%m-%dT%H:%i:%sZ') AS match_schedule_utc,
     m.prize_pool,
     m.per_kill,
     m.team_type,
@@ -353,16 +354,42 @@ router.delete('/matches/:id', requireAdminKey, async (req, res) => {
     return res.status(400).json({ error: 'Invalid match id' });
   }
 
+  const connection = await pool.getConnection();
   try {
-    const [rows] = await pool.query('SELECT id FROM matches WHERE id = ?', [id]);
+    await connection.beginTransaction();
+    const [rows] = await connection.query('SELECT id FROM matches WHERE id = ? FOR UPDATE', [id]);
     if (!rows[0]) {
+      await connection.rollback();
       return res.status(404).json({ error: 'Match not found' });
     }
-    await pool.query('DELETE FROM matches WHERE id = ?', [id]);
+    const [participants] = await connection.query(
+      `SELECT id, user_id, entry_fee FROM match_participants
+       WHERE match_id = ? AND user_id IS NOT NULL AND status = 'Joined' AND entry_fee > 0 FOR UPDATE`,
+      [id],
+    );
+    for (const participant of participants) {
+      await connection.query(
+        `INSERT INTO wallets (user_id, coin_balance, deposit_balance)
+         VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE
+           coin_balance = coin_balance + VALUES(coin_balance),
+           deposit_balance = deposit_balance + VALUES(deposit_balance)`,
+        [participant.user_id, participant.entry_fee, participant.entry_fee],
+      );
+      await connection.query(
+        `INSERT INTO wallet_transactions (user_id, transaction_type, amount, description)
+         VALUES (?, 'received', ?, ?)`,
+        [participant.user_id, participant.entry_fee, `Entry fee refunded for deleted match #${id}`],
+      );
+    }
+    await connection.query('DELETE FROM matches WHERE id = ?', [id]);
+    await connection.commit();
     res.json({ ok: true, message: 'Match deleted successfully.' });
   } catch (error) {
+    await connection.rollback();
     console.error('DELETE /api/admin/matches/:id failed:', error);
     res.status(500).json({ error: 'Failed to delete match' });
+  } finally {
+    connection.release();
   }
 });
 
@@ -539,12 +566,44 @@ router.patch('/matches/:id/room', requireAdminKey, async (req, res) => {
   if (!roomId || !roomPassword) return res.status(400).json({ error: 'Room ID and password are required.' });
 
   try {
-    const [result] = await pool.query(
+    const [matches] = await pool.query('SELECT id, match_id, event_name, room_id, room_password FROM matches WHERE id = ?', [id]);
+    if (!matches[0]) return res.status(404).json({ error: 'Match not found' });
+    const match = matches[0];
+    await pool.query(
       'UPDATE matches SET room_id = ?, room_password = ? WHERE id = ?',
       [roomId, roomPassword, id],
     );
-    if (!result.affectedRows) return res.status(404).json({ error: 'Match not found' });
-    res.json({ ok: true, message: 'Room details updated successfully.' });
+    let recipients = 0;
+    if (match.room_id !== roomId || match.room_password !== roomPassword) {
+      const [participants] = await pool.query(
+        `SELECT DISTINCT user_id FROM match_participants
+         WHERE match_id = ? AND user_id IS NOT NULL AND status = 'Joined'`,
+        [id],
+      );
+      const userIds = participants.map((participant) => participant.user_id);
+      if (userIds.length) {
+        const title = 'Match Room Details Updated!';
+        const message = `Match ID: ${match.match_id} | Room ID: ${roomId} | Pass: ${roomPassword}`;
+        const [tokens] = await pool.query(
+          `SELECT DISTINCT upt.token FROM user_push_tokens upt
+           INNER JOIN users u ON u.id = upt.user_id
+           WHERE upt.user_id IN (?) AND u.is_blocked = 0`,
+          [userIds],
+        );
+        recipients = userIds.length;
+        const delivery = await sendPushNotification({
+          title,
+          message,
+          link: `/match/${id}`,
+          targetTokens: tokens.map((row) => row.token),
+          customData: { matchId: match.match_id, roomId, roomPassword, type: 'MATCH_ROOM_DETAILS' },
+        });
+        if (delivery.invalidTokens.length) {
+          await pool.query('DELETE FROM user_push_tokens WHERE token IN (?)', [delivery.invalidTokens]);
+        }
+      }
+    }
+    res.json({ ok: true, recipients, message: 'Room details updated successfully.' });
   } catch (error) {
     console.error('PATCH /api/admin/matches/:id/room failed:', error);
     res.status(500).json({ error: 'Failed to update room details' });

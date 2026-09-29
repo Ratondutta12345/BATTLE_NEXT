@@ -1,8 +1,8 @@
 const state = {
   users: [],
   depositRequests: [],
+  zapupiTransactions: [],
   withdrawRequests: [],
-  paymentConfig: null,
   announcements: [],
   notifications: [],
   contacts: [],
@@ -20,6 +20,9 @@ const state = {
   error: null,
   search: '',
   matchQuery: '',
+  depositQuery: '',
+  zapupiQuery: '',
+  withdrawQuery: '',
   matchPage: 1,
   matchPageSize: 10,
   activeSection: 'dashboard',
@@ -43,7 +46,33 @@ const statusColors = {
 const formatDate = (value) => {
   if (!value) return '—';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return '—';
+  const time = date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: true });
+  const dateLabel = date.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' });
+  return `${time} · ${dateLabel}`;
+};
+
+const formatMatchDateTimeLocal = (value) => {
+  if (!value) return '2026-09-06T08:20';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '2026-09-06T08:20';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
+};
+
+const matchDateTimeToUtcSql = (value) => {
+  if (!value) return '';
+  const date = new Date(`${value}:00+05:30`);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 19).replace('T', ' ');
 };
 
 const escapeHtml = (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -62,22 +91,66 @@ const apiFetch = async (url, options = {}) => {
 
 const filteredUsers = () => {
   const query = state.search.trim().toLowerCase();
-  return query ? state.users.filter((user) => [user.fullName, user.username, user.email, user.mobileNo].join(' ').toLowerCase().includes(query)) : state.users;
+  return query ? state.users.filter((user) => [user.id, user.fullName, user.firstName, user.lastName, user.username, user.email, user.mobileNo, user.mobile].join(' ').toLowerCase().includes(query)) : state.users;
 };
 
 const getFilteredMatches = () => {
   const query = state.matchQuery.trim().toLowerCase();
   const records = [...state.matches];
   if (!query) return records;
-  return records.filter((match) => [
-    match.matchId,
-    match.gameName,
-    match.eventName,
-    match.status,
-    match.map,
-    match.matchType,
+  return records.filter((match) => [match.matchId, match.id].join(' ').toLowerCase().includes(query));
+};
+
+const getFilteredDepositRequests = () => {
+  const query = state.depositQuery.trim().toLowerCase();
+  if (!query) return state.depositRequests;
+  return state.depositRequests.filter((request) => [request.id, request.userId, request.fullName, request.username, request.mobile, request.amount, request.transactionId, request.status].join(' ').toLowerCase().includes(query));
+};
+
+const getFilteredZapupiTransactions = () => {
+  const query = state.zapupiQuery.trim().toLowerCase();
+  if (!query) return state.zapupiTransactions;
+  return state.zapupiTransactions.filter((transaction) => [
+    transaction.orderId,
+    transaction.providerOrderId,
+    transaction.userId,
+    transaction.fullName,
+    transaction.username,
+    transaction.mobile,
+    transaction.amount,
+    transaction.status,
   ].join(' ').toLowerCase().includes(query));
 };
+
+const getFilteredWithdrawRequests = () => {
+  const query = state.withdrawQuery.trim().toLowerCase();
+  if (!query) return state.withdrawRequests;
+  return state.withdrawRequests.filter((request) => [request.id, request.userId, request.fullName, request.username, request.mobile, request.amount, request.upiId, request.status].join(' ').toLowerCase().includes(query));
+};
+
+function rerenderSearchResults(input) {
+  const { selectionStart, selectionEnd, id } = input;
+  renderPage();
+  const refreshedInput = document.getElementById(id);
+  if (!refreshedInput) return;
+  refreshedInput.focus();
+  if (selectionStart !== null && selectionEnd !== null) refreshedInput.setSelectionRange(selectionStart, selectionEnd);
+}
+
+appEl.addEventListener('input', (event) => {
+  const input = event.target;
+  const field = {
+    'search-input': 'search',
+    'match-search': 'matchQuery',
+    'deposit-search': 'depositQuery',
+    'zapupi-search': 'zapupiQuery',
+    'withdraw-search': 'withdrawQuery',
+  }[input.id];
+  if (!field) return;
+  state[field] = input.value;
+  if (field === 'matchQuery') state.matchPage = 1;
+  rerenderSearchResults(input);
+});
 
 const renderStatusBadge = (status) => `<span class="status-badge ${statusColors[status] || 'neutral'}">${status}</span>`;
 
@@ -126,7 +199,6 @@ function bindRichEditorHandlers() {
 function renderUsers() {
   if (state.activeSection === 'money') return renderMoney();
   if (state.activeSection === 'withdraw') return renderWithdrawals();
-  if (state.activeSection === 'money-qr') return renderMoneyQr();
   const users = filteredUsers();
   const rows = users.map((user) => `<tr><td>${user.id}</td><td><strong>${escapeHtml(user.fullName)}</strong><br /><small>${escapeHtml(user.username)}</small></td><td>${escapeHtml(user.mobileNo)}</td><td>${escapeHtml(user.email)}</td><td>₹${Number(user.coinBalance || 0).toFixed(2)}</td><td><span class="status ${user.isBlocked ? 'danger' : 'active'}">${user.isBlocked ? 'Blocked' : 'Active'}</span></td><td><button class="btn-primary" data-coin-action="add" data-user-id="${user.id}">Add coins</button> <button class="btn-secondary" data-coin-action="deduct" data-user-id="${user.id}">Deduct coins</button> <button class="btn-danger" data-block-user="${user.id}" data-blocked="${user.isBlocked}">${user.isBlocked ? 'Unblock' : 'Block'}</button></td></tr>`).join('');
   return `<section class="panel"><div class="panel-toolbar"><input id="search-input" class="search-input" type="search" placeholder="Search users..." value="${escapeHtml(state.search)}" /><span class="count-badge">${users.length} user${users.length === 1 ? '' : 's'}</span></div>${state.loading ? '<div class="state-box">Loading users...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>User</th><th>Mobile</th><th>Email</th><th>Coins</th><th>Status</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="state-box">No users found.</div>'}</section>`;
@@ -135,23 +207,36 @@ function renderUsers() {
 function renderDashboard() {
   const dashboard = state.dashboard;
   if (!dashboard) return '<section class="panel"><div class="state-box">Loading dashboard...</div></section>';
-  const matchRows = dashboard.matches.map((match) => `<tr><td>#${match.matchId || match.id}</td><td>${escapeHtml(match.eventName || match.gameName || 'Match')}</td><td>${escapeHtml(formatDate(match.matchSchedule))}</td><td>${escapeHtml(match.status)}</td><td>${match.joinedPlayers || 0}/${match.totalPlayers || 0}</td></tr>`).join('');
-  return `<section class="dashboard-grid"><div class="dashboard-card"><span>Total users</span><strong>${dashboard.totalUsers}</strong></div><div class="dashboard-card"><span>Blocked users</span><strong>${dashboard.blockedUsers}</strong></div><div class="dashboard-card"><span>Total coins</span><strong>₹${dashboard.totalCoins.toFixed(2)}</strong></div><div class="dashboard-card"><span>Active matches</span><strong>${dashboard.activeMatches}</strong></div><div class="dashboard-card"><span>Pending deposits</span><strong>${dashboard.pendingDeposits}</strong></div><div class="dashboard-card"><span>Pending withdrawals</span><strong>${dashboard.pendingWithdrawals}</strong></div></section><section class="panel"><div class="panel-toolbar"><strong>Upcoming and ongoing matches</strong><span class="count-badge">${dashboard.matches.length}</span></div>${matchRows ? `<div class="table-wrap"><table><thead><tr><th>Match</th><th>Name</th><th>Start time</th><th>Status</th><th>Players</th></tr></thead><tbody>${matchRows}</tbody></table></div>` : '<div class="state-box">No active matches.</div>'}</section>`;
+  const metrics = [
+    { label: 'Total users', value: dashboard.totalUsers, detail: 'Registered accounts', tone: 'users' },
+    { label: 'Total matches', value: dashboard.totalMatches, detail: 'All match records', tone: 'matches' },
+    { label: 'Active matches', value: dashboard.activeMatches, detail: 'Upcoming and ongoing', tone: 'active' },
+    { label: 'Reviewed payments', value: dashboard.reviewedPayments, detail: 'Approved or rejected', tone: 'reviewed' },
+    { label: 'Withdrawal requests', value: dashboard.totalWithdrawals, detail: `${dashboard.pendingWithdrawals} pending review`, tone: 'withdrawals' },
+    { label: 'Blocked users', value: dashboard.blockedUsers, detail: 'Accounts restricted', tone: 'blocked' },
+    { label: 'Total coins', value: `₹${dashboard.totalCoins.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, detail: 'Across all user wallets', tone: 'coins' },
+    { label: 'Pending payments', value: dashboard.pendingDeposits, detail: 'Awaiting review', tone: 'pending' },
+    { label: 'Completed matches', value: dashboard.completedMatches, detail: 'Results available', tone: 'completed' },
+  ];
+  return `<section class="dashboard-overview"><div class="dashboard-section-heading"><div><span class="dashboard-eyebrow">PLATFORM OVERVIEW</span><h2>At a glance</h2></div><span class="dashboard-live"><i></i> Live data</span></div><div class="dashboard-grid">${metrics.map((metric) => `<article class="dashboard-card dashboard-card-${metric.tone}"><div class="dashboard-card-top"><span>${metric.label}</span><i aria-hidden="true"></i></div><strong>${metric.value}</strong><small>${metric.detail}</small></article>`).join('')}</div></section>`;
 }
 
 function renderMoney() {
-  const rows = state.depositRequests.map((request) => `<tr><td>#${request.id}</td><td><strong>${escapeHtml(request.fullName || request.username)}</strong><br /><small>${escapeHtml(request.username)} · ${escapeHtml(request.mobile)}</small></td><td>₹${Number(request.amount).toFixed(2)}</td><td><code>${escapeHtml(request.transactionId)}</code></td><td>${escapeHtml(formatDate(request.createdAt))}</td><td><span class="status ${request.status === 'approved' ? 'active' : request.status === 'rejected' ? 'danger' : 'neutral'}">${escapeHtml(request.status)}</span></td><td>${request.status === 'pending' ? `<button class="btn-primary" data-approve-request="${request.id}">Accept</button> <button class="btn-danger" data-reject-request="${request.id}">Reject</button>` : 'Reviewed'}</td></tr>`).join('');
-  return `<section class="panel"><div class="panel-toolbar"><strong>Wallet payment requests</strong><span class="count-badge">${state.depositRequests.filter((request) => request.status === 'pending').length} pending</span></div>${state.loading ? '<div class="state-box">Loading payment requests...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows ? `<div class="table-wrap"><table><thead><tr><th>Request</th><th>User</th><th>Amount</th><th>Transaction ID</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="state-box">No payment requests yet.</div>'}</section>`;
+  const zapupiTransactions = getFilteredZapupiTransactions();
+  const zapupiRows = zapupiTransactions.map((transaction) => `<tr><td><code>${escapeHtml(transaction.orderId)}</code>${transaction.providerOrderId !== transaction.orderId ? `<br /><small>Provider: ${escapeHtml(transaction.providerOrderId)}</small>` : ''}</td><td><strong>${escapeHtml(transaction.fullName || transaction.username)}</strong><br /><small>${escapeHtml(transaction.username)} · ${escapeHtml(transaction.mobile)}</small></td><td>₹${Number(transaction.amount).toFixed(2)}</td><td><span class="status ${transaction.status === 'COMPLETED' ? 'active' : transaction.status === 'FAILED' ? 'danger' : 'neutral'}">${escapeHtml(transaction.status)}</span></td><td>${escapeHtml(formatDate(transaction.createdAt))}</td><td>${escapeHtml(formatDate(transaction.completedAt))}</td></tr>`).join('');
+  const requests = getFilteredDepositRequests();
+  const rows = requests.map((request) => `<tr><td>#${request.id}</td><td><strong>${escapeHtml(request.fullName || request.username)}</strong><br /><small>${escapeHtml(request.username)} · ${escapeHtml(request.mobile)}</small></td><td>₹${Number(request.amount).toFixed(2)}</td><td><code>${escapeHtml(request.transactionId)}</code></td><td>${escapeHtml(formatDate(request.createdAt))}</td><td><span class="status ${request.status === 'approved' ? 'active' : request.status === 'rejected' ? 'danger' : 'neutral'}">${escapeHtml(request.status)}</span></td><td>${request.status === 'pending' ? `<button class="btn-primary" data-approve-request="${request.id}">Accept</button> <button class="btn-danger" data-reject-request="${request.id}">Reject</button>` : 'Reviewed'}</td></tr>`).join('');
+  const pendingCount = requests.filter((request) => request.status === 'pending').length;
+  const emptyMessage = state.depositQuery ? 'No payment requests match your search.' : 'No payment requests yet.';
+  return `<section class="panel"><div class="panel-toolbar"><strong>ZapUPI transactions</strong><input id="zapupi-search" class="search-input" type="search" placeholder="Search by order, user, phone, amount, or status" aria-label="Search ZapUPI transactions" value="${escapeHtml(state.zapupiQuery)}" /><span class="count-badge">${zapupiTransactions.length} of ${state.zapupiTransactions.length} transactions</span></div>${state.loading ? '<div class="state-box">Loading ZapUPI transactions...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : zapupiRows ? `<div class="table-wrap"><table><thead><tr><th>Order ID</th><th>User</th><th>Amount</th><th>Status</th><th>Created</th><th>Completed</th></tr></thead><tbody>${zapupiRows}</tbody></table></div>` : `<div class="state-box">${state.zapupiQuery ? 'No ZapUPI transactions match your search.' : 'No ZapUPI transactions yet.'}</div>`}</section><section class="panel"><div class="panel-toolbar"><strong>Legacy manual payment requests</strong><input id="deposit-search" class="search-input" type="search" placeholder="Search by user, phone, amount, or transaction ID" aria-label="Search manual payment requests" value="${escapeHtml(state.depositQuery)}" /><span class="count-badge">${requests.length} requests · ${pendingCount} pending</span></div>${state.loading ? '<div class="state-box">Loading payment requests...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows ? `<div class="table-wrap"><table><thead><tr><th>Request</th><th>User</th><th>Amount</th><th>Transaction ID</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="state-box">${emptyMessage}</div>`}</section>`;
 }
 
 function renderWithdrawals() {
-  const rows = state.withdrawRequests.map((request) => `<tr><td>#${request.id}</td><td><strong>${escapeHtml(request.fullName || request.username)}</strong><br /><small>${escapeHtml(request.username)} · ${escapeHtml(request.mobile)}</small></td><td>₹${Number(request.amount).toFixed(2)}</td><td><code>${escapeHtml(request.upiId)}</code></td><td>${escapeHtml(formatDate(request.createdAt))}</td><td><span class="status ${request.status === 'approved' ? 'active' : request.status === 'cancelled' ? 'danger' : 'neutral'}">${escapeHtml(request.status)}</span></td><td>${request.status === 'pending' ? `<button class="btn-primary" data-approve-withdraw="${request.id}">Approve</button> <button class="btn-danger" data-cancel-withdraw="${request.id}">Cancel</button>` : 'Reviewed'}</td></tr>`).join('');
-  return `<section class="panel"><div class="panel-toolbar"><strong>Withdrawal requests</strong><span class="count-badge">${state.withdrawRequests.filter((request) => request.status === 'pending').length} pending</span></div>${state.loading ? '<div class="state-box">Loading withdrawals...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows ? `<div class="table-wrap"><table><thead><tr><th>Request</th><th>User</th><th>Amount</th><th>UPI ID</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="state-box">No withdrawal requests yet.</div>'}</section>`;
-}
-
-function renderMoneyQr() {
-  const payment = state.paymentConfig;
-  return `<section class="panel"><div class="announcement-panel-header"><h2>Wallet payment QR</h2><p class="page-subtitle">Upload the QR code customers should scan on the mobile add-money page.</p></div><form id="payment-qr-form" class="announcement-form"><label>QR image<input id="payment-qr-image" name="image" type="file" accept="image/jpeg,image/png,image/webp" required /></label><img id="payment-qr-preview" class="qr-admin-preview" alt="Payment QR preview" ${payment?.qrImageUrl ? `src="${escapeHtml(payment.qrImageUrl)}"` : 'hidden'} /><button class="btn-primary" type="submit">${payment?.qrImageUrl ? 'Replace QR code' : 'Save QR code'}</button></form></section><section class="panel"><div class="panel-toolbar"><strong>Current payment details</strong></div><div class="payment-config-summary"><span>UPI ID</span><strong>${escapeHtml(payment?.upiId || 'Set PAYMENT_UPI_ID on the backend')}</strong><span>Payee name</span><strong>${escapeHtml(payment?.payeeName || 'BATTLE-NEXT')}</strong><span>QR status</span><strong>${payment?.qrImageUrl ? 'Admin QR active' : 'Generated QR fallback active'}</strong></div></section>`;
+  const requests = getFilteredWithdrawRequests();
+  const rows = requests.map((request) => `<tr><td>#${request.id}</td><td><strong>${escapeHtml(request.fullName || request.username)}</strong><br /><small>${escapeHtml(request.username)} · ${escapeHtml(request.mobile)}</small></td><td>₹${Number(request.amount).toFixed(2)}</td><td><code>${escapeHtml(request.upiId)}</code></td><td>${escapeHtml(formatDate(request.createdAt))}</td><td><span class="status ${request.status === 'approved' ? 'active' : request.status === 'cancelled' ? 'danger' : 'neutral'}">${escapeHtml(request.status)}</span></td><td>${request.status === 'pending' ? `<button class="btn-primary" data-approve-withdraw="${request.id}">Approve</button> <button class="btn-danger" data-cancel-withdraw="${request.id}">Cancel</button>` : 'Reviewed'}</td></tr>`).join('');
+  const pendingCount = requests.filter((request) => request.status === 'pending').length;
+  const emptyMessage = state.withdrawQuery ? 'No withdrawal requests match your search.' : 'No withdrawal requests yet.';
+  return `<section class="panel"><div class="panel-toolbar"><strong>Withdrawal requests</strong><input id="withdraw-search" class="search-input" type="search" placeholder="Search by user, phone, amount, or UPI ID" aria-label="Search withdrawal requests" value="${escapeHtml(state.withdrawQuery)}" /><span class="count-badge">${requests.length} requests · ${pendingCount} pending</span></div>${state.loading ? '<div class="state-box">Loading withdrawals...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows ? `<div class="table-wrap"><table><thead><tr><th>Request</th><th>User</th><th>Amount</th><th>UPI ID</th><th>Submitted</th><th>Status</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="state-box">${emptyMessage}</div>`}</section>`;
 }
 
 function renderAnnouncements() {
@@ -168,9 +253,13 @@ function renderNotifications() {
   return `<section class="panel"><div class="announcement-panel-header"><h2>${item ? 'Edit notification' : 'New notification'}</h2><p class="page-subtitle">Active notifications appear in the mobile app and trigger the unread badge.</p></div>${form}</section><section class="panel announcement-list"><div class="panel-toolbar"><strong>All notifications</strong><span class="count-badge">${state.notifications.length}</span></div>${state.loading ? '<div class="state-box">Loading notifications...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows || '<div class="state-box">No notifications yet.</div>'}</section>`;
 }
 
+function renderSendNotification() {
+  return `<section class="panel"><div class="announcement-panel-header"><h2>Compose push notification</h2></div><form id="send-notification-form" class="announcement-form"><label>Title<input name="title" maxlength="255" required placeholder="Notification title" /></label><label>Notification text<textarea name="message" maxlength="2000" required placeholder="Write a message for all app users"></textarea></label><label>Link / URL<input name="link" maxlength="1000" placeholder="https://example.com or /match/123" /></label><label>Icon / image URL<input name="iconUrl" type="url" maxlength="1000" placeholder="https://example.com/notification-image.png" /></label><label>Upload icon / image<input name="iconFile" type="file" accept="image/png,image/jpeg,image/webp" /></label><div class="form-actions"><button class="btn-primary" type="submit">Send Notification</button></div></form></section>`;
+}
+
 function renderContacts() {
   const rows = state.contacts.map((contact) => `<article class="announcement-row"><div><div class="announcement-row-title">${escapeHtml(contact.label)} <span class="status ${contact.isActive ? 'active' : ''}">${contact.isActive ? 'Active' : 'Inactive'}</span></div><p>${escapeHtml(contact.type)} · ${escapeHtml(contact.value)}</p></div><div class="row-actions"><button class="btn-secondary" data-toggle-contact="${contact.id}">${contact.isActive ? 'Deactivate' : 'Activate'}</button><button class="btn-danger" data-delete-contact="${contact.id}">Delete</button></div></article>`).join('');
-  return `<section class="panel"><div class="announcement-panel-header"><h2>Add contact option</h2><p class="page-subtitle">These options appear in the app Contact page.</p></div><form id="contact-form" class="announcement-form"><label>Contact type<select name="type"><option value="phone">Phone</option><option value="telegram">Telegram</option><option value="email">Email</option></select></label><label>Label<input name="label" maxlength="100" placeholder="Phone support" required /></label><label>Number, username, or email<input name="value" maxlength="255" placeholder="4656465543" required /></label><label>Display order<input name="displayOrder" type="number" min="0" value="0" /></label><label class="checkbox-label"><input name="isActive" type="checkbox" checked /> Active</label><button class="btn-primary" type="submit">Save Contact</button></form></section><section class="panel announcement-list"><div class="panel-toolbar"><strong>Contact options</strong><span class="count-badge">${state.contacts.length}</span></div>${state.loading ? '<div class="state-box">Loading contacts...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows || '<div class="state-box">No contact options yet.</div>'}</section>`;
+  return `<section class="panel"><div class="announcement-panel-header"><h2>Add contact option</h2><p class="page-subtitle">These options appear in the app Contact page.</p></div><form id="contact-form" class="announcement-form"><label>Contact type<select name="type"><option value="phone">Phone</option><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label><label>Label<input name="label" maxlength="100" placeholder="Phone support" required /></label><label>Number, username, or email<input name="value" maxlength="255" placeholder="4656465543" required /></label><label>Display order<input name="displayOrder" type="number" min="0" value="0" /></label><label class="checkbox-label"><input name="isActive" type="checkbox" checked /> Active</label><button class="btn-primary" type="submit">Save Contact</button></form></section><section class="panel announcement-list"><div class="panel-toolbar"><strong>Contact options</strong><span class="count-badge">${state.contacts.length}</span></div>${state.loading ? '<div class="state-box">Loading contacts...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows || '<div class="state-box">No contact options yet.</div>'}</section>`;
 }
 
 function renderBanners() {
@@ -200,7 +289,10 @@ function renderMatchBanners() {
 }
 
 function renderMatchForm() {
-  const match = state.editingMatch || {};
+  const match = { ...(state.editingMatch || {}) };
+  if (match.matchSchedule) {
+    match.matchSchedule = `${formatMatchDateTimeLocal(match.matchSchedule)}:00Z`;
+  }
   const selectedGameId = match.gameId ?? '';
   const selectedBannerId = match.matchBannerId ?? match.bannerId ?? '';
   const gameOptions = state.games.map((game) => `<option value="${game.id}" ${String(game.id) === String(selectedGameId) ? 'selected' : ''}>${escapeHtml(game.name)}</option>`).join('');
@@ -253,6 +345,7 @@ function renderPage() {
   
   const announcements = state.activeSection === 'announcements';
   const notifications = state.activeSection === 'notifications';
+  const isSendNotification = state.activeSection === 'send-notification';
   const contacts = state.activeSection === 'contacts';
   const banners = state.activeSection === 'banners';
   const games = state.activeSection === 'games';
@@ -262,8 +355,79 @@ function renderPage() {
   const title = matchResult ? 'Match Result' : matchCreate ? 'Create Match' : matches ? 'Match' : games ? 'Games Slot' : banners ? 'Banners' : contacts ? 'Contact' : notifications ? 'Notifications' : announcements ? 'Announcements' : state.activeSection === 'withdraw' ? 'Withdraw' : state.activeSection === 'dashboard' ? 'Dashboard' : 'Users';
 
   appEl.innerHTML = `<div class="layout"><aside class="sidebar"><div class="brand"><div class="brand-mark">B</div><div><p class="brand-title">BATTLE-NEXT</p><p class="brand-subtitle">Admin Panel</p></div></div><nav class="nav"><button class="nav-item ${matches ? 'active' : ''}" data-section="matches">Matches</button><button class="nav-item ${games ? 'active' : ''}" data-section="games">Games</button><button class="nav-item ${announcements ? 'active' : ''}" data-section="announcements">Announcements</button><button class="nav-item ${notifications ? 'active' : ''}" data-section="notifications">Notifications</button><button class="nav-item ${contacts ? 'active' : ''}" data-section="contacts">Contact</button><button class="nav-item ${banners ? 'active' : ''}" data-section="banners">Games Slot</button></nav></aside><main class="main"><header class="page-header"><div><h1>${title}</h1><p class="page-subtitle">${matches ? 'Manage esports match lifecycle and participant state.' : matchResult ? 'Enter kills, positions, and prizes for joined members.' : games ? 'Manage games shown in the mobile app.' : banners ? 'Manage images shown in the mobile carousel.' : contacts ? 'Manage phone, Telegram, and email support options.' : notifications ? 'Send messages and alerts to mobile app users.' : announcements ? 'Manage messages shown in the mobile app.' : 'Registered app users from the database'}</p></div><div class="header-actions"><input id="admin-key" class="key-input" type="password" placeholder="Admin API key" value="${escapeHtml(state.adminKey)}" /><button class="btn-secondary" id="refresh-btn">Refresh</button></div></header>${state.error ? `<div class="state-box error page-error">${escapeHtml(state.error)}</div>` : ''}${matches ? renderMatches() : matchResult ? renderMatchResult() : games ? renderGames() : banners ? renderBanners() : contacts ? renderContacts() : notifications ? renderNotifications() : announcements ? renderAnnouncements() : renderUsers()}${state.editingMatch ? renderMatchForm() : ''}${state.selectedMatch ? renderMatchDetails() : ''}</main></div>`;
+  const layout = appEl.querySelector('.layout');
+  if (isSendNotification) {
+    const main = appEl.querySelector('.main');
+    main?.querySelectorAll('.panel').forEach((panel) => panel.remove());
+    main?.querySelector('.page-header')?.insertAdjacentHTML('afterend', renderSendNotification());
+    const heading = main?.querySelector('.page-header h1');
+    const subtitle = main?.querySelector('.page-header .page-subtitle');
+    if (heading) heading.textContent = 'Send Notification';
+    if (subtitle) subtitle.textContent = 'Broadcast a push notification to registered mobile devices.';
+  }
+  const sidebar = layout?.querySelector('.sidebar');
   const nav = appEl.querySelector('.nav');
-  nav?.insertAdjacentHTML('afterbegin', '<button class="nav-item" data-section="dashboard">Dashboard</button><button class="nav-item" data-section="users">Users</button><button class="nav-item" data-section="money">Money</button><button class="nav-item" data-section="withdraw">Withdraw</button><button class="nav-item" data-section="money-qr">Money QR</button><button class="nav-item" data-section="rules">Rules</button><button class="nav-item" data-section="match-banners">Match Banners</button>');
+  appEl.querySelector('.page-header > div > .page-subtitle')?.remove();
+  appEl.querySelector('.page-header > .header-actions')?.remove();
+  const userSearch = appEl.querySelector('#search-input');
+  if (userSearch) {
+    userSearch.placeholder = 'Search by username, name, number, or email';
+    userSearch.setAttribute('aria-label', 'Search users by username, name, phone number, or email');
+  }
+  const matchSearch = appEl.querySelector('#match-search');
+  if (matchSearch) {
+    matchSearch.placeholder = 'Search by match ID';
+    matchSearch.setAttribute('aria-label', 'Search matches by ID');
+  }
+  const pageHeading = appEl.querySelector('.page-header > div');
+  if (nav && sidebar && pageHeading) {
+    nav.id = 'primary-navigation';
+    pageHeading.classList.add('page-title-group');
+    const menuButton = document.createElement('button');
+    menuButton.type = 'button';
+    menuButton.className = 'mobile-nav-toggle';
+    menuButton.setAttribute('aria-label', 'Open navigation');
+    menuButton.setAttribute('aria-controls', nav.id);
+    menuButton.setAttribute('aria-expanded', 'false');
+    menuButton.innerHTML = '<span aria-hidden="true"></span>';
+    pageHeading.prepend(menuButton);
+
+    const backdrop = document.createElement('button');
+    backdrop.type = 'button';
+    backdrop.className = 'mobile-nav-backdrop';
+    backdrop.setAttribute('aria-label', 'Close navigation');
+    layout.insertBefore(backdrop, sidebar.nextSibling);
+
+    const closeNavigation = () => {
+      layout.classList.remove('mobile-nav-open');
+      menuButton.setAttribute('aria-expanded', 'false');
+      menuButton.setAttribute('aria-label', 'Open navigation');
+    };
+    menuButton.addEventListener('click', () => {
+      const isOpen = layout.classList.toggle('mobile-nav-open');
+      menuButton.setAttribute('aria-expanded', String(isOpen));
+      menuButton.setAttribute('aria-label', isOpen ? 'Close navigation' : 'Open navigation');
+    });
+    backdrop.addEventListener('click', closeNavigation);
+  }
+  if (nav) {
+    const sections = [
+      ['dashboard', 'Dashboard'],
+      ['matches', 'Match'],
+      ['users', 'Users'],
+      ['send-notification', 'Send Notification'],
+      ['money', 'Transactions'],
+      ['withdraw', 'Withdraw'],
+      ['games', 'Games Slot'],
+      ['match-banners', 'Match Banner'],
+      ['banners', 'Banners'],
+      ['rules', 'Rules'],
+      ['notifications', 'Notification'],
+      ['announcements', 'Announcements'],
+      ['contacts', 'Contact'],
+    ];
+    nav.innerHTML = sections.map(([section, label]) => `<button class="nav-item ${state.activeSection === section ? 'active' : ''}" data-section="${section}">${label}</button>`).join('');
+  }
   const matchesNav = nav?.querySelector('[data-section="matches"]');
   const gamesNav = nav?.querySelector('[data-section="games"]');
   const bannersNav = nav?.querySelector('[data-section="banners"]');
@@ -288,15 +452,13 @@ function renderPage() {
   if (usersNav) usersNav.classList.toggle('active', state.activeSection === 'users');
   const dashboardNav = nav?.querySelector('[data-section="dashboard"]');
   if (dashboardNav) dashboardNav.classList.toggle('active', state.activeSection === 'dashboard');
-  const moneyQrNav = nav?.querySelector('[data-section="money-qr"]');
-  if (moneyQrNav) moneyQrNav.classList.toggle('active', state.activeSection === 'money-qr');
   const withdrawNav = nav?.querySelector('[data-section="withdraw"]');
   if (withdrawNav) withdrawNav.classList.toggle('active', state.activeSection === 'withdraw');
-  if (state.activeSection === 'dashboard' || state.activeSection === 'money' || state.activeSection === 'withdraw' || state.activeSection === 'money-qr') {
+  if (state.activeSection === 'dashboard' || state.activeSection === 'money' || state.activeSection === 'withdraw') {
     const heading = appEl.querySelector('.page-header h1');
     const subtitle = appEl.querySelector('.page-header .page-subtitle');
-    if (heading) heading.textContent = state.activeSection === 'dashboard' ? 'Dashboard' : state.activeSection === 'money-qr' ? 'Money QR' : state.activeSection === 'withdraw' ? 'Withdraw' : 'Money';
-    if (subtitle) subtitle.textContent = state.activeSection === 'dashboard' ? 'Live overview of users, wallets, matches, and pending reviews.' : state.activeSection === 'money-qr' ? 'Manage the QR code shown on the mobile add-money page.' : state.activeSection === 'withdraw' ? 'Review user withdrawal requests and UPI details.' : 'Review QR payment requests and credit approved wallet deposits.';
+    if (heading) heading.textContent = state.activeSection === 'dashboard' ? 'Dashboard' : state.activeSection === 'money' ? 'Transactions' : 'Withdraw';
+    if (subtitle) subtitle.textContent = state.activeSection === 'dashboard' ? 'Live overview of users, wallets, matches, and pending reviews.' : state.activeSection === 'withdraw' ? 'Review user withdrawal requests and UPI details.' : 'Review legacy manual payment requests and credit approved wallet deposits.';
   }
   if ((state.activeSection === 'matches' || matchCreate) && state.editingMatch) {
     const matchGrid = appEl.querySelector('#match-form .form-grid');
@@ -327,6 +489,7 @@ function renderPage() {
       if (prizeSection && ruleField) prizeSection.insertAdjacentElement('afterend', ruleField);
       matchGrid.querySelector('[name="matchSlot"]')?.closest('.form-field')?.remove();
       matchGrid.querySelector('[data-rich-editor="privateDescription"]')?.closest('.form-section')?.remove();
+      matchGrid.closest('.match-form')?.querySelector('[data-rich-editor="matchDescription"]')?.closest('.form-section')?.remove();
       matchGrid.closest('.match-form')?.querySelector('[data-rich-editor="roomDescription"]')?.closest('.form-section')?.remove();
       const financialFields = ['entryFee', 'perKill', 'prizePool'].map((name) => matchGrid.querySelector(`[name="${name}"]`)?.closest('.form-field')).filter(Boolean);
       if (financialFields.length) {
@@ -341,6 +504,31 @@ function renderPage() {
         layout.append(financial, details);
         financialFields.forEach((field) => financial.appendChild(field));
         details.appendChild(matchGrid);
+      }
+      if (!state.editingMatch.id) {
+        const matchForm = matchGrid.closest('.match-form');
+        for (const [name, label] of [['teamType', 'Select team type'], ['status', 'Select match status']]) {
+          const select = matchForm.elements.namedItem(name);
+          if (select && !select.querySelector('option[value=""]')) {
+            select.insertAdjacentHTML('afterbegin', `<option value="">${label}</option>`);
+          }
+        }
+        matchForm.querySelectorAll('input:not([type="file"]), select, textarea').forEach((field) => {
+          field.value = '';
+          if ('placeholder' in field) field.placeholder = '';
+        });
+        const requiredFields = ['gameId', 'gameVersion', 'eventName', 'matchUrl', 'matchSchedule', 'prizePool', 'perKill', 'teamType', 'entryFee', 'totalPlayers', 'map', 'status', 'ruleId', 'prizeDescription'];
+        for (const name of requiredFields) {
+          const field = matchForm.elements.namedItem(name);
+          if (!field) continue;
+          field.required = true;
+          const label = field.closest('.form-field')?.querySelector('label');
+          const sectionTitle = field.closest('.form-section')?.querySelector('h3');
+          const labelElement = label || sectionTitle;
+          if (labelElement && !labelElement.textContent.trim().endsWith('*')) {
+            labelElement.append(document.createTextNode(' *'));
+          }
+        }
       }
     }
   }
@@ -375,14 +563,6 @@ function renderPage() {
     });
   });
 
-  document.getElementById('refresh-btn')?.addEventListener('click', loadActiveSection);
-  document.getElementById('admin-key')?.addEventListener('change', (event) => {
-    state.adminKey = event.target.value;
-    localStorage.setItem('adminKey', state.adminKey);
-    loadActiveSection();
-  });
-
-  document.getElementById('search-input')?.addEventListener('input', (event) => { state.search = event.target.value; renderPage(); });
   document.getElementById('announcement-form')?.addEventListener('submit', saveAnnouncement);
   document.getElementById('cancel-edit')?.addEventListener('click', () => { state.editingAnnouncement = null; renderPage(); });
   document.querySelectorAll('[data-edit]').forEach((button) => button.addEventListener('click', () => { state.editingAnnouncement = state.announcements.find((item) => item.id === Number(button.dataset.edit)); renderPage(); }));
@@ -392,9 +572,8 @@ function renderPage() {
   document.querySelectorAll('[data-reject-request]').forEach((button) => button.addEventListener('click', () => reviewDepositRequest(Number(button.dataset.rejectRequest), 'reject')));
   document.querySelectorAll('[data-approve-withdraw]').forEach((button) => button.addEventListener('click', () => reviewWithdrawRequest(Number(button.dataset.approveWithdraw), 'approve')));
   document.querySelectorAll('[data-cancel-withdraw]').forEach((button) => button.addEventListener('click', () => reviewWithdrawRequest(Number(button.dataset.cancelWithdraw), 'cancel')));
-  document.getElementById('payment-qr-form')?.addEventListener('submit', savePaymentQr);
-  document.getElementById('payment-qr-image')?.addEventListener('change', (event) => { const file = event.target.files[0]; const preview = document.getElementById('payment-qr-preview'); if (file && preview) { preview.src = URL.createObjectURL(file); preview.hidden = false; } });
   document.getElementById('notification-form')?.addEventListener('submit', saveNotification);
+  document.getElementById('send-notification-form')?.addEventListener('submit', submitPushNotification);
   document.getElementById('cancel-notification-edit')?.addEventListener('click', () => { state.editingNotification = null; renderPage(); });
   document.querySelectorAll('[data-edit-notification]').forEach((button) => button.addEventListener('click', () => { state.editingNotification = state.notifications.find((item) => item.id === Number(button.dataset.editNotification)); renderPage(); }));
   document.querySelectorAll('[data-toggle-notification]').forEach((button) => button.addEventListener('click', () => toggleNotification(Number(button.dataset.toggleNotification))));
@@ -431,7 +610,7 @@ function renderPage() {
 
 function bindMatchTableEvents() {
   document.getElementById('new-match-btn')?.addEventListener('click', () => {
-    state.editingMatch = { status: 'Upcoming' };
+    state.editingMatch = {};
     state.selectedMatch = null;
     state.activeSection = 'match-create';
     loadMatchCreatePage();
@@ -441,18 +620,6 @@ function bindMatchTableEvents() {
     state.matchPageSize = Number(event.target.value) || 10;
     state.matchPage = 1;
     renderPage();
-  });
-
-  document.getElementById('match-search')?.addEventListener('input', (event) => {
-    state.matchQuery = event.target.value;
-    state.matchPage = 1;
-    const cursor = event.target.selectionStart;
-    renderPage();
-    const nextSearch = document.getElementById('match-search');
-    if (nextSearch) {
-      nextSearch.focus();
-      nextSearch.setSelectionRange(cursor, cursor);
-    }
   });
 
   document.getElementById('select-all-matches')?.addEventListener('change', (event) => {
@@ -701,10 +868,13 @@ async function loadDashboard() {
       totalUsers: userRows.length,
       blockedUsers: userRows.filter((user) => user.isBlocked).length,
       totalCoins: userRows.reduce((total, user) => total + Number(user.coinBalance || 0), 0),
+      totalMatches: matchRows.length,
       activeMatches: matchRows.filter((match) => ['Upcoming', 'Ongoing'].includes(match.status)).length,
+      completedMatches: matchRows.filter((match) => match.status === 'Complete').length,
+      reviewedPayments: depositRows.filter((request) => request.status !== 'pending').length,
       pendingDeposits: depositRows.filter((request) => request.status === 'pending').length,
+      totalWithdrawals: withdrawalRows.length,
       pendingWithdrawals: withdrawalRows.filter((request) => request.status === 'pending').length,
-      matches: matchRows.filter((match) => ['Upcoming', 'Ongoing'].includes(match.status)).slice(0, 10),
     };
   } catch (error) {
     state.error = error.message;
@@ -757,7 +927,12 @@ async function loadDepositRequests() {
   state.error = null;
   renderPage();
   try {
-    state.depositRequests = (await apiFetch('/api/wallet/deposit-requests')).requests || [];
+    const [depositResult, zapupiResult] = await Promise.all([
+      apiFetch('/api/wallet/deposit-requests'),
+      apiFetch('/api/wallet/zapupi-orders'),
+    ]);
+    state.depositRequests = depositResult.requests || [];
+    state.zapupiTransactions = zapupiResult.transactions || [];
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -797,33 +972,6 @@ async function reviewWithdrawRequest(id, action) {
   try {
     await apiFetch(`/api/wallet/withdraw-requests/${id}/${action}`, { method: 'POST' });
     await loadWithdrawRequests();
-  } catch (error) {
-    state.error = error.message;
-    renderPage();
-  }
-}
-
-async function loadPaymentConfig() {
-  state.loading = true;
-  state.error = null;
-  renderPage();
-  try {
-    state.paymentConfig = (await apiFetch('/api/wallet/payment-config/admin')).payment || null;
-  } catch (error) {
-    state.error = error.message;
-  } finally {
-    state.loading = false;
-    renderPage();
-  }
-}
-
-async function savePaymentQr(event) {
-  event.preventDefault();
-  const form = event.target;
-  const payload = new FormData(form);
-  try {
-    await apiFetch('/api/wallet/payment-config/qr', { method: 'POST', body: payload });
-    await loadPaymentConfig();
   } catch (error) {
     state.error = error.message;
     renderPage();
@@ -960,6 +1108,7 @@ async function loadMatchDetails(id) {
 
 function loadActiveSection() {
   if (state.activeSection === 'dashboard') return loadDashboard();
+  if (state.activeSection === 'send-notification') { state.loading = false; state.error = null; return renderPage(); }
   if (state.activeSection === 'match-create') return loadMatchCreatePage();
   if (state.activeSection === 'announcements') return loadAnnouncements();
   if (state.activeSection === 'notifications') return loadNotifications();
@@ -971,8 +1120,40 @@ function loadActiveSection() {
   if (state.activeSection === 'matches') return loadMatches();
   if (state.activeSection === 'money') return loadDepositRequests();
   if (state.activeSection === 'withdraw') return loadWithdrawRequests();
-  if (state.activeSection === 'money-qr') return loadPaymentConfig();
   return loadUsers();
+}
+
+async function submitPushNotification(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
+  let iconUrl = form.get('iconUrl');
+  const button = formElement.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = 'Sending...';
+  try {
+    const iconFile = form.get('iconFile');
+    if (iconFile && typeof iconFile === 'object' && 'size' in iconFile && iconFile.size > 0) {
+      const uploadForm = new FormData();
+      uploadForm.append('icon', iconFile);
+      const uploaded = await apiFetch('/api/admin/notifications/upload-icon', { method: 'POST', body: uploadForm });
+      iconUrl = uploaded.iconUrl;
+    }
+    const result = await apiFetch('/api/admin/notifications/send', {
+      method: 'POST',
+      body: JSON.stringify({ title: form.get('title'), message: form.get('message'), link: form.get('link'), iconUrl }),
+    });
+    formElement.reset();
+    window.alert(`Sent to ${result.devices} registered devices: ${result.sent} accepted, ${result.failed} failed.`);
+  } catch (error) {
+    state.error = error.message;
+    renderPage();
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = 'Send Notification';
+    }
+  }
 }
 
 async function saveContact(event) {
@@ -1188,23 +1369,23 @@ async function saveMatch(event) {
   const payload = {
     matchSlot: 'all',
     gameId: valueOf('gameId') || null,
-    gameName: selectedGame?.name || valueOf('eventName') || 'CS 1V1',
-    gameVersion: valueOf('gameVersion') || 'Current',
+    gameName: selectedGame?.name || '',
+    gameVersion: valueOf('gameVersion'),
     eventName: valueOf('eventName'),
     matchUrl: valueOf('matchUrl'),
-    matchSchedule: valueOf('matchSchedule') ? new Date(valueOf('matchSchedule')).toISOString().slice(0, 19).replace('T', ' ') : '',
+    matchSchedule: matchDateTimeToUtcSql(valueOf('matchSchedule')),
     prizePool: Number(valueOf('prizePool') || 0),
     perKill: Number(valueOf('perKill') || 0),
-    teamType: valueOf('teamType') || 'SOLO',
+    teamType: valueOf('teamType'),
     entryFee: Number(valueOf('entryFee') || 0),
     totalPlayers: Number(valueOf('totalPlayers') || 0),
     map: valueOf('map'),
     matchBannerId: valueOf('matchBannerId') || null,
     ruleId: valueOf('ruleId') || null,
-    status: valueOf('status') || 'Upcoming',
+    status: valueOf('status'),
     roomDescription: '',
     prizeDescription: getRichEditorContent('prizeDescription'),
-    matchDescription: getRichEditorContent('matchDescription'),
+    matchDescription: state.editingMatch?.matchDescription || '',
     privateDescription: '',
     matchType: 'Paid',
   };

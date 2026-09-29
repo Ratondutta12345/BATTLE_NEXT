@@ -1,3 +1,8 @@
 node_modules
 .next
+.env
+.env.*
+!.env.example
 .env.local
+firebase/*.json
+battle-next-firebase-adminsdk-fbsvc-282df8f3ba.json

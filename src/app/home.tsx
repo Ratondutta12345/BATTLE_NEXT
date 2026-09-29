@@ -126,6 +126,10 @@ export default function HomeScreen() {
                 pagingEnabled
                 showsHorizontalScrollIndicator={false}
                 keyExtractor={(item) => String(item.id)}
+                getItemLayout={(_, index) => {
+                  const itemWidth = Dimensions.get('window').width - 32;
+                  return { length: itemWidth, offset: itemWidth * index, index };
+                }}
                 onMomentumScrollEnd={(event) => setBannerIndex(Math.round(event.nativeEvent.contentOffset.x / (Dimensions.get('window').width - 32)))}
                 renderItem={({ item }) => <Pressable style={styles.bannerFrame} onPress={() => item.targetUrl && Linking.openURL(item.targetUrl)} disabled={!item.targetUrl} accessibilityRole={item.targetUrl ? 'link' : 'imagebutton'} accessibilityLabel={item.targetUrl ? 'Open banner link' : 'Banner'}><Image source={{ uri: resolveApiUrl(item.imageUrl) }} style={styles.bannerImage} contentFit="cover" /></Pressable>}
               />

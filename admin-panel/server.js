@@ -1,4 +1,5 @@
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 require('dotenv').config({ path: path.join(__dirname, '.env.local') });
 const express = require('express');
 const cors = require('cors');
@@ -8,6 +9,8 @@ const usersRouter = require('./routes/users');
 const authRouter = require('./routes/auth');
 const announcementsRouter = require('./routes/announcements');
 const notificationsRouter = require('./routes/notifications');
+const deviceTokensRouter = require('./routes/deviceTokens');
+const adminNotificationsRouter = require('./routes/adminNotifications');
 const walletRouter = require('./routes/wallet');
 const playersRouter = require('./routes/players');
 const settingsRouter = require('./routes/settings');
@@ -26,6 +29,20 @@ let server;
 let isShuttingDown = false;
 
 app.use(cors());
+app.use('/api/wallet/zapupi-webhook', express.raw({
+  type: ['application/json', 'application/x-www-form-urlencoded'],
+  limit: '100kb',
+}), (req, res, next) => {
+  req.rawBody = Buffer.from(req.body || []);
+  try {
+    req.body = req.is('application/json')
+      ? JSON.parse(req.rawBody.toString('utf8'))
+      : Object.fromEntries(new URLSearchParams(req.rawBody.toString('utf8')));
+    next();
+  } catch {
+    res.status(400).json({ error: 'Invalid webhook body.' });
+  }
+});
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -43,6 +60,8 @@ app.use('/api/users', usersRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/announcements', announcementsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/notifications', deviceTokensRouter);
+app.use('/api/admin/notifications', adminNotificationsRouter);
 app.use('/api/wallet', walletRouter);
 app.use('/api/players', playersRouter);
 app.use('/api/settings', settingsRouter);

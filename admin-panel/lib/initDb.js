@@ -40,12 +40,30 @@ const CREATE_WALLET_TRANSACTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS wallet_transactions (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
+    gateway_order_id VARCHAR(50) NULL UNIQUE,
     transaction_type VARCHAR(20) NOT NULL,
     amount DECIMAL(12,2) NOT NULL,
     description VARCHAR(255) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_wallet_transactions_user_date (user_id, created_at),
     CONSTRAINT fk_wallet_transactions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB
+`;
+
+const CREATE_ZAPUPI_ORDERS_TABLE = `
+  CREATE TABLE IF NOT EXISTS zapupi_orders (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id VARCHAR(50) NOT NULL UNIQUE,
+    provider_order_id VARCHAR(100) NOT NULL UNIQUE,
+    user_id INT NOT NULL,
+    amount_paise BIGINT UNSIGNED NOT NULL,
+    payment_url TEXT NOT NULL,
+    status ENUM('PENDING', 'COMPLETED', 'FAILED') NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    KEY idx_zapupi_user_status (user_id, status),
+    CONSTRAINT fk_zapupi_orders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   ) ENGINE=InnoDB
 `;
 
@@ -115,6 +133,20 @@ const CREATE_NOTIFICATIONS_TABLE = `
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_notifications_active (is_active, created_at)
   )
+`;
+
+const CREATE_USER_PUSH_TOKENS_TABLE = `
+  CREATE TABLE IF NOT EXISTS user_push_tokens (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    token VARCHAR(255) NOT NULL UNIQUE,
+    platform VARCHAR(20) NOT NULL,
+    provider VARCHAR(20) NOT NULL DEFAULT 'fcm',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_user_push_tokens_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB
 `;
 
 const CREATE_NOTIFICATION_READS_TABLE = `
@@ -302,6 +334,38 @@ async function ensureNullableColumn(table, column, definition) {
   await pool.query(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
 }
 
+async function removeLegacyParticipantUniqueIndex() {
+  const [indexes] = await pool.query(
+    `SELECT COUNT(*) AS column_count,
+        SUM(COLUMN_NAME = 'match_id') AS match_id_columns,
+        SUM(COLUMN_NAME = 'user_id') AS user_id_columns,
+        MAX(NON_UNIQUE) AS non_unique
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'match_participants'
+       AND INDEX_NAME = 'uq_match_participant'`,
+  );
+  const index = indexes[0];
+  if (Number(index.column_count) === 2
+    && Number(index.match_id_columns) === 1
+    && Number(index.user_id_columns) === 1
+    && Number(index.non_unique) === 0) {
+    const [matchIndexes] = await pool.query(
+      `SELECT COUNT(*) AS count
+       FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'match_participants'
+         AND COLUMN_NAME = 'match_id'
+         AND SEQ_IN_INDEX = 1
+         AND NON_UNIQUE = 1`,
+    );
+    if (Number(matchIndexes[0].count) === 0) {
+      await pool.query('ALTER TABLE match_participants ADD INDEX idx_participants_match (match_id)');
+    }
+    await pool.query('ALTER TABLE match_participants DROP INDEX uq_match_participant');
+  }
+}
+
 async function seedDefaults() {
   await pool.query(
     `INSERT IGNORE INTO app_settings (setting_key, setting_value) VALUES
@@ -349,12 +413,18 @@ async function initDatabase() {
   await pool.query('ALTER TABLE wallets MODIFY COLUMN winning_balance DECIMAL(12,2) NOT NULL DEFAULT 0');
   await pool.query('ALTER TABLE wallets MODIFY COLUMN bonus_balance DECIMAL(12,2) NOT NULL DEFAULT 0');
   await pool.query(CREATE_WALLET_TRANSACTIONS_TABLE);
+  await ensureColumn('wallet_transactions', 'gateway_order_id', 'VARCHAR(50) NULL UNIQUE');
+  await pool.query(CREATE_ZAPUPI_ORDERS_TABLE);
   await pool.query(CREATE_WALLET_DEPOSIT_REQUESTS_TABLE);
   await pool.query(CREATE_WALLET_WITHDRAW_REQUESTS_TABLE);
   await pool.query(CREATE_CONTACT_OPTIONS_TABLE);
   await pool.query(CREATE_ANNOUNCEMENTS_TABLE);
   await pool.query(CREATE_NOTIFICATIONS_TABLE);
+  await ensureColumn('notifications', 'link', 'VARCHAR(1000) NULL');
+  await ensureColumn('notifications', 'icon_url', 'VARCHAR(1000) NULL');
   await pool.query(CREATE_NOTIFICATION_READS_TABLE);
+  await pool.query(CREATE_USER_PUSH_TOKENS_TABLE);
+  await ensureColumn('user_push_tokens', 'provider', "VARCHAR(20) NOT NULL DEFAULT 'fcm'");
   await pool.query(CREATE_BANNERS_TABLE);
   await ensureColumn('banners', 'key_name', 'VARCHAR(180) NULL');
   await ensureColumn('banners', 'title', 'VARCHAR(255) NULL');
@@ -398,6 +468,7 @@ async function initDatabase() {
   await ensureColumn('matches', 'match_type', 'VARCHAR(50) NOT NULL DEFAULT "Paid"');
   await ensureColumn('matches', 'status', 'VARCHAR(30) NOT NULL DEFAULT "Upcoming"');
   await pool.query(CREATE_MATCH_PARTICIPANTS_TABLE);
+  await removeLegacyParticipantUniqueIndex();
   await ensureColumn('match_participants', 'in_game_name', 'VARCHAR(150) NULL');
   await ensureColumn('match_participants', 'entry_fee', 'DECIMAL(10,2) NOT NULL DEFAULT 0');
   await ensureColumn('match_participants', 'result', 'VARCHAR(30) NULL');

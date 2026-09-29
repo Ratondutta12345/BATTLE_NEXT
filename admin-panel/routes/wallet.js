@@ -1,71 +1,217 @@
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const express = require('express');
-const multer = require('multer');
 const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
+const {
+  amountToPaise,
+  createOrderId,
+  formatAmount,
+  isVerifiedCompletedOrder,
+  normalizeProviderStatus,
+  postForm,
+  verifyWebhookSignature,
+} = require('../lib/zapupi');
 
 const router = express.Router();
-const paymentDirectory = path.join(__dirname, '..', 'public', 'uploads', 'payment');
-fs.mkdirSync(paymentDirectory, { recursive: true });
+function getZapupiConfig() {
+  const userToken = String(process.env.ZAPUPI_USER_TOKEN || '').trim();
+  const secretKey = String(process.env.ZAPUPI_SECRET_KEY || '').trim();
+  const redirectUrl = String(process.env.ZAPUPI_REDIRECT_URL || '').trim();
+  if (!userToken || !secretKey || !redirectUrl) return null;
 
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: paymentDirectory,
-    filename: (_req, file, callback) => {
-      const extension = path.extname(file.originalname).toLowerCase();
-      callback(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${extension}`);
-    },
-  }),
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (_req, file, callback) => {
-    callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype));
-  },
-});
+  try {
+    if (new URL(redirectUrl).protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
 
-async function getPaymentConfig() {
-  const upiId = String(process.env.PAYMENT_UPI_ID || '').trim();
-  const [rows] = await pool.query(`SELECT setting_value FROM app_settings WHERE setting_key = 'wallet_qr_url'`);
-  const qrImageUrl = rows[0]?.setting_value || null;
-  return { upiId, payeeName: String(process.env.PAYMENT_PAYEE_NAME || 'BATTLE-NEXT').trim(), qrImageUrl, configured: Boolean(qrImageUrl || upiId) };
+  return { userToken, secretKey, redirectUrl };
 }
 
-router.get('/payment-config', async (_req, res) => {
-  try {
-    res.json({ payment: await getPaymentConfig() });
-  } catch (error) {
-    console.error('GET /api/wallet/payment-config failed:', error);
-    res.status(500).json({ error: 'Failed to fetch payment configuration' });
-  }
-});
+async function findZapupiOrder(orderId) {
+  const [rows] = await pool.query(
+    'SELECT * FROM zapupi_orders WHERE order_id = ? OR provider_order_id = ? LIMIT 1',
+    [orderId, orderId],
+  );
+  return rows[0] || null;
+}
 
-router.get('/payment-config/admin', requireAdminKey, async (_req, res) => {
-  try {
-    res.json({ payment: await getPaymentConfig() });
-  } catch (error) {
-    console.error('GET /api/wallet/payment-config/admin failed:', error);
-    res.status(500).json({ error: 'Failed to fetch payment configuration' });
-  }
-});
+async function confirmZapupiOrder(order, providerPayload) {
+  if (!isVerifiedCompletedOrder(order, providerPayload)) return false;
 
-router.post('/payment-config/qr', requireAdminKey, upload.single('image'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'A JPG, PNG, or WebP QR image is required' });
-  const imageUrl = `/uploads/payment/${req.file.filename}`;
+  const connection = await pool.getConnection();
   try {
-    const [rows] = await pool.query(`SELECT setting_value FROM app_settings WHERE setting_key = 'wallet_qr_url'`);
-    await pool.query(
-      `INSERT INTO app_settings (setting_key, setting_value) VALUES ('wallet_qr_url', ?)
-       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-      [imageUrl],
+    await connection.beginTransaction();
+    const [rows] = await connection.query('SELECT * FROM zapupi_orders WHERE id = ? FOR UPDATE', [order.id]);
+    const currentOrder = rows[0];
+    if (!currentOrder) {
+      await connection.rollback();
+      return false;
+    }
+    if (currentOrder.status === 'COMPLETED') {
+      await connection.commit();
+      return true;
+    }
+    if (currentOrder.status !== 'PENDING' || !isVerifiedCompletedOrder(currentOrder, providerPayload)) {
+      await connection.rollback();
+      return false;
+    }
+
+    const amount = formatAmount(Number(currentOrder.amount_paise));
+    const [walletResult] = await connection.query(
+      `UPDATE wallets
+       SET coin_balance = coin_balance + ?, deposit_balance = deposit_balance + ?
+       WHERE user_id = ?`,
+      [amount, amount, currentOrder.user_id],
     );
-    const previousUrl = rows[0]?.setting_value;
-    if (previousUrl?.startsWith('/uploads/')) fs.rmSync(path.join(__dirname, '..', 'public', previousUrl), { force: true });
-    res.status(201).json({ payment: await getPaymentConfig() });
+    if (!walletResult.affectedRows) throw new Error(`Wallet missing for ZapUPI order ${currentOrder.order_id}`);
+
+    await connection.query(
+      `INSERT INTO wallet_transactions (user_id, gateway_order_id, transaction_type, amount, description)
+       VALUES (?, ?, 'added', ?, ?)`,
+      [currentOrder.user_id, currentOrder.order_id, amount, `ZapUPI wallet deposit (${currentOrder.order_id})`],
+    );
+    await connection.query(
+      `UPDATE zapupi_orders SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [currentOrder.id],
+    );
+    await connection.commit();
+    return true;
   } catch (error) {
-    fs.rmSync(req.file.path, { force: true });
-    console.error('POST /api/wallet/payment-config/qr failed:', error);
-    res.status(500).json({ error: 'Failed to save payment QR image' });
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function getZapupiOrderStatus(order) {
+  const config = getZapupiConfig();
+  if (!config) throw new Error('ZapUPI is not configured');
+
+  const payload = await postForm('check-order-status', {
+    user_token: config.userToken,
+    order_id: order.order_id,
+  });
+  const status = normalizeProviderStatus(payload);
+
+  if (status === 'COMPLETED') {
+    if (!isVerifiedCompletedOrder(order, payload)) {
+      throw new Error(`ZapUPI status did not match order ${order.order_id}`);
+    }
+    await confirmZapupiOrder(order, payload);
+    return 'COMPLETED';
+  }
+
+  if (status === 'FAILED') {
+    await pool.query(
+      `UPDATE zapupi_orders SET status = 'FAILED' WHERE id = ? AND status = 'PENDING'`,
+      [order.id],
+    );
+    return 'FAILED';
+  }
+
+  return 'PENDING';
+}
+
+router.post('/create-zapupi-order', async (req, res) => {
+  const userId = Number(req.body?.userId);
+  const amountPaise = amountToPaise(req.body?.amount);
+  const config = getZapupiConfig();
+  let orderId;
+  if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ error: 'Invalid user id' });
+  if (amountPaise === null) return res.status(400).json({ error: 'Enter a valid amount of at least ₹10 with up to two decimal places.' });
+  if (!config) return res.status(503).json({ error: 'ZapUPI payment is not configured on the server.' });
+
+  try {
+    const [users] = await pool.query('SELECT mobile FROM users WHERE id = ?', [userId]);
+    if (!users[0]) return res.status(404).json({ error: 'User not found' });
+    const customerMobile = String(users[0].mobile || '').replace(/\D/g, '').slice(-10);
+    if (!/^\d{10}$/.test(customerMobile)) {
+      return res.status(400).json({ error: 'Add a valid 10-digit mobile number to your account before paying.' });
+    }
+
+    orderId = createOrderId();
+    const amount = formatAmount(amountPaise);
+    await pool.query(
+      `INSERT INTO zapupi_orders (order_id, provider_order_id, user_id, amount_paise, payment_url)
+       VALUES (?, ?, ?, ?, '')`,
+      [orderId, orderId, userId, amountPaise],
+    );
+
+    const providerPayload = await postForm('create-order', {
+      customer_mobile: customerMobile,
+      user_token: config.userToken,
+      amount,
+      order_id: orderId,
+      redirect_url: config.redirectUrl,
+      remark1: 'Wallet deposit',
+      remark2: `User ${userId}`,
+    });
+    const paymentUrl = String(providerPayload?.result?.payment_url || '');
+    const providerOrderId = String(providerPayload?.result?.orderId || orderId);
+    let parsedPaymentUrl;
+    try {
+      parsedPaymentUrl = new URL(paymentUrl);
+    } catch {
+      parsedPaymentUrl = null;
+    }
+
+    if (providerPayload?.status !== true || !parsedPaymentUrl || parsedPaymentUrl.protocol !== 'https:' || providerOrderId.length > 100) {
+      await pool.query(`UPDATE zapupi_orders SET status = 'FAILED' WHERE order_id = ? AND status = 'PENDING'`, [orderId]);
+      return res.status(502).json({ error: providerPayload?.message || 'ZapUPI did not return a valid checkout URL.' });
+    }
+
+    await pool.query(
+      'UPDATE zapupi_orders SET provider_order_id = ?, payment_url = ? WHERE order_id = ?',
+      [providerOrderId, paymentUrl, orderId],
+    );
+    res.status(201).json({ orderId, amount, paymentUrl, qrValue: paymentUrl, status: 'PENDING' });
+  } catch (error) {
+    if (orderId) {
+      await pool.query(`UPDATE zapupi_orders SET status = 'FAILED' WHERE order_id = ? AND status = 'PENDING'`, [orderId]).catch(() => {});
+    }
+    console.error('POST /api/wallet/create-zapupi-order failed:', error);
+    res.status(502).json({ error: 'Could not create a ZapUPI checkout. Please try again.' });
+  }
+});
+
+router.get('/check-status', async (req, res) => {
+  const orderId = String(req.query.orderId || '').trim();
+  const userId = Number(req.query.userId);
+  if (!orderId || orderId.length > 100 || !Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'A valid order id and user id are required.' });
+  }
+
+  try {
+    const order = await findZapupiOrder(orderId);
+    if (!order || Number(order.user_id) !== userId) return res.status(404).json({ error: 'Payment order not found.' });
+    const status = order.status === 'PENDING' ? await getZapupiOrderStatus(order) : order.status;
+    res.json({ orderId: order.order_id, status });
+  } catch (error) {
+    console.error('GET /api/wallet/check-status failed:', error.message);
+    res.status(502).json({ error: 'Could not confirm payment status. Please retry shortly.' });
+  }
+});
+
+router.post('/zapupi-webhook', async (req, res) => {
+  const config = getZapupiConfig();
+  if (!config) return res.status(503).json({ error: 'ZapUPI webhook is not configured.' });
+  const signature = req.get('x-zapupi-signature') || req.get('x-zaprupee-signature');
+  if (!verifyWebhookSignature(req.rawBody, signature, config.secretKey)) {
+    return res.status(401).json({ error: 'Invalid webhook signature.' });
+  }
+
+  const orderId = String(req.body?.order_id || req.body?.orderId || req.body?.result?.orderId || '').trim();
+  if (!orderId || orderId.length > 100) return res.status(400).json({ error: 'Webhook order id is required.' });
+
+  try {
+    const order = await findZapupiOrder(orderId);
+    if (!order) return res.status(404).json({ error: 'Payment order not found.' });
+    const status = order.status === 'PENDING' ? await getZapupiOrderStatus(order) : order.status;
+    res.json({ received: true, orderId: order.order_id, status });
+  } catch (error) {
+    console.error('POST /api/wallet/zapupi-webhook failed:', error.message);
+    res.status(502).json({ error: 'Could not reconcile the payment notification.' });
   }
 });
 
@@ -217,6 +363,34 @@ router.get('/deposit-requests', requireAdminKey, async (_req, res) => {
   } catch (error) {
     console.error('GET /api/wallet/deposit-requests failed:', error);
     res.status(500).json({ error: 'Failed to fetch payment requests' });
+  }
+});
+
+router.get('/zapupi-orders', requireAdminKey, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT o.order_id, o.provider_order_id, o.user_id, o.amount_paise, o.status,
+              o.created_at, o.completed_at, u.username, u.first_name, u.last_name,
+              u.mobile, u.country_code
+       FROM zapupi_orders o
+       INNER JOIN users u ON u.id = o.user_id
+       ORDER BY o.created_at DESC, o.id DESC`,
+    );
+    res.json({ transactions: rows.map((row) => ({
+      orderId: row.order_id,
+      providerOrderId: row.provider_order_id,
+      userId: Number(row.user_id),
+      username: row.username,
+      fullName: `${row.first_name} ${row.last_name}`.trim(),
+      mobile: `${row.country_code} ${row.mobile}`.trim(),
+      amount: Number(row.amount_paise) / 100,
+      status: row.status,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+    })) });
+  } catch (error) {
+    console.error('GET /api/wallet/zapupi-orders failed:', error);
+    res.status(500).json({ error: 'Failed to fetch ZapUPI transactions' });
   }
 });
 

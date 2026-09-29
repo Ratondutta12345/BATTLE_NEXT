@@ -17,17 +17,20 @@ router.get('/my/:status', async (req, res) => {
   const matchStatus = req.params.status === 'completed' ? 'Complete' : req.params.status === 'ongoing' ? 'Ongoing' : 'Upcoming';
   try {
     const [rows] = await pool.query(
-      `SELECT m.id, m.match_id, m.event_name, m.game_name, m.game_version, m.status, m.match_schedule,
+      `SELECT m.id, m.match_id, m.event_name, m.game_name, m.game_version, m.status,
+        DATE_FORMAT(m.match_schedule, '%Y-%m-%dT%H:%i:%sZ') AS match_schedule_utc,
         m.prize_pool, m.per_kill, m.entry_fee, m.team_type, m.map_name, m.total_players,
         mb.image_url AS banner_url,
-        (SELECT COUNT(*) FROM match_participants joined_mp WHERE joined_mp.match_id = m.id) AS joined_players,
-        mp.in_game_name, mp.joined_at
+        (SELECT COUNT(*) FROM match_participants joined_mp WHERE joined_mp.match_id = m.id) AS joined_players
        FROM matches m
-       INNER JOIN match_participants mp ON mp.match_id = m.id AND mp.user_id = ?
        LEFT JOIN match_banners mb ON mb.id = m.match_banner_id
        WHERE m.status = ?
-       ORDER BY m.match_schedule DESC, mp.joined_at DESC`,
-      [userId, matchStatus],
+         AND EXISTS (
+           SELECT 1 FROM match_participants mp
+           WHERE mp.match_id = m.id AND mp.user_id = ?
+         )
+       ORDER BY m.match_schedule DESC`,
+      [matchStatus, userId],
     );
     res.json({ contests: rows.map((row) => ({
       id: row.id,
@@ -36,7 +39,7 @@ router.get('/my/:status', async (req, res) => {
       gameName: row.game_name,
       gameVersion: row.game_version,
       status: row.status,
-      startsAt: row.match_schedule,
+      startsAt: row.match_schedule_utc,
       perKill: Number(row.per_kill ?? 0),
       entryFee: Number(row.entry_fee ?? 0),
       prizePool: Number(row.prize_pool ?? 0),

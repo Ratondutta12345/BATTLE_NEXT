@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS wallets (
 CREATE TABLE IF NOT EXISTS wallet_transactions (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
+  gateway_order_id VARCHAR(50) NULL UNIQUE,
   transaction_type VARCHAR(20) NOT NULL,
   amount DECIMAL(12,2) NOT NULL,
   description VARCHAR(255) NOT NULL,
@@ -55,6 +56,21 @@ CREATE TABLE IF NOT EXISTS wallet_deposit_requests (
   INDEX idx_deposit_requests_user_date (user_id, created_at),
   CONSTRAINT fk_deposit_requests_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS zapupi_orders (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  order_id VARCHAR(50) NOT NULL UNIQUE,
+  provider_order_id VARCHAR(100) NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  amount_paise BIGINT UNSIGNED NOT NULL,
+  payment_url TEXT NOT NULL,
+  status ENUM('PENDING', 'COMPLETED', 'FAILED') NOT NULL DEFAULT 'PENDING',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL,
+  KEY idx_zapupi_user_status (user_id, status),
+  CONSTRAINT fk_zapupi_orders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS wallet_withdraw_requests (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -85,6 +101,8 @@ CREATE TABLE IF NOT EXISTS announcements (
   id INT AUTO_INCREMENT PRIMARY KEY,
   title VARCHAR(255) NULL,
   message TEXT NOT NULL,
+  link VARCHAR(1000) NULL,
+  icon_url VARCHAR(1000) NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -109,6 +127,18 @@ CREATE TABLE IF NOT EXISTS notification_reads (
   FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS user_push_tokens (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  platform VARCHAR(20) NOT NULL,
+  provider VARCHAR(20) NOT NULL DEFAULT 'fcm',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_user_push_tokens_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS app_settings (
   setting_key VARCHAR(100) PRIMARY KEY,

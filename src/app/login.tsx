@@ -77,7 +77,7 @@ export default function LoginScreen() {
         return;
       }
 
-      setUser(result.data.user);
+      await setUser(result.data.user);
       router.replace('/home');
     } finally {
       setLoading(false);

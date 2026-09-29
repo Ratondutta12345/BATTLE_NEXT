@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useRouter, type Href } from 'expo-router';
 
 import { AccountScreen, accountStyles } from '@/components/account/AccountScreen';
 import { API_ENDPOINTS, apiRequest } from '@/constants/api';
@@ -9,11 +10,13 @@ type Notification = {
   id: number;
   title: string | null;
   message: string;
+  link: string | null;
   isRead: boolean;
   createdAt: string;
 };
 
 export default function NotificationsScreen() {
+  const router = useRouter();
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,14 +50,21 @@ export default function NotificationsScreen() {
       ) : null}
       <ScrollView showsVerticalScrollIndicator={false}>
         {notifications.map((notification) => (
-          <View key={notification.id} style={[accountStyles.card, !notification.isRead && styles.unreadCard]}>
+          <Pressable key={notification.id} accessibilityRole={notification.link ? 'button' : undefined} disabled={!notification.link} onPress={() => {
+            if (!notification.link) return;
+            if (notification.link.startsWith('/') && !notification.link.startsWith('//')) router.push(notification.link as Href);
+            else if (notification.link.startsWith('myapp://')) {
+              const parsed = new URL(notification.link);
+              router.push(`${parsed.host ? `/${parsed.host}` : ''}${parsed.pathname}${parsed.search}` as Href);
+            } else void Linking.openURL(notification.link);
+          }} style={[accountStyles.card, !notification.isRead && styles.unreadCard]}>
             <View style={styles.cardHeader}>
               <Text style={accountStyles.value}>{notification.title || 'BATTLE-NEXT'}</Text>
               {!notification.isRead ? <View style={styles.unreadDot} /> : null}
             </View>
             <Text style={[accountStyles.text, styles.message]}>{notification.message}</Text>
             <Text style={accountStyles.muted}>{new Date(notification.createdAt).toLocaleString()}</Text>
-          </View>
+          </Pressable>
         ))}
       </ScrollView>
     </AccountScreen>

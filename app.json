@@ -1,42 +1,57 @@
 {
   "expo": {
-    "name": "MyApp",
+    "name": "Battle Next",
     "slug": "MyApp",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/logo1.png",
     "scheme": "myapp",
     "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/logo1.png"
     },
     "android": {
+      "package": "com.ratondutta.battlenext",
+      "icon": "./assets/logo1.png",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/logo1.png"
       },
+      "allowBackup": true,
       "predictiveBackGestureEnabled": false,
-      "softwareKeyboardLayoutMode": "resize",
-      "usesCleartextTraffic": true
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/logo1.png"
     },
     "plugins": [
       "expo-router",
       [
+        "expo-notifications",
+        {
+          "color": "#F7941D",
+          "defaultChannel": "high_importance_channel"
+        }
+      ],
+      [
         "expo-splash-screen",
         {
-          "backgroundColor": "#000000"
+          "backgroundColor": "#000000",
+          "image": "./assets/logo1.png"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "06af02a1-9b31-458c-a9b2-3616e0f54347"
+      }
     }
   }
 }

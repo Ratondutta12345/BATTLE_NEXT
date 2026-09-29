@@ -1,17 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { router } from 'expo-router';
-import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
+import * as WebBrowser from 'expo-web-browser';
+import QRCode from 'react-native-qrcode-svg';
 import { AccountScreen } from '@/components/account/AccountScreen';
-import { API_BASE_URL, API_ENDPOINTS, apiRequest } from '@/constants/api';
+import { API_ENDPOINTS, apiRequest } from '@/constants/api';
 import { useAuth } from '@/context/AuthContext';
 
 type Wallet = { coinBalance: number; deposit: number; winning: number; bonus: number; updatedAt: string };
 type Transaction = { id: number; type: 'added' | 'received' | 'withdraw'; amount: number; description: string; createdAt: string };
-type PaymentConfig = { upiId: string; payeeName: string; qrImageUrl: string | null; configured: boolean };
+type ZapupiOrder = { orderId: string; paymentUrl: string; qrValue: string; amount: string; status: 'PENDING' | 'FAILED' };
 type WithdrawStatus = { eligible: boolean; availableAt: string | null; balance: number };
 
 const transactionLabels: Record<Transaction['type'], string> = { added: 'Added', received: 'Received', withdraw: 'Withdrawn' };
+
+function showWalletAlert(title: string, message: string) {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.alert(`${title}\n\n${message}`);
+    return;
+  }
+  Alert.alert(title, message);
+}
 
 export default function WalletScreen() {
   const { user } = useAuth();
@@ -22,28 +32,65 @@ export default function WalletScreen() {
   const [transactionsLoading, setTransactionsLoading] = useState(false);
   const [addWalletVisible, setAddWalletVisible] = useState(false);
   const [addAmount, setAddAmount] = useState('');
-  const [transactionId, setTransactionId] = useState('');
-  const [paymentConfig, setPaymentConfig] = useState<PaymentConfig | null>(null);
-  const [addStep, setAddStep] = useState<'amount' | 'qr' | 'transaction'>('amount');
+  const [activeOrder, setActiveOrder] = useState<ZapupiOrder | null>(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(300);
   const [addLoading, setAddLoading] = useState(false);
   const [withdrawStatus, setWithdrawStatus] = useState<WithdrawStatus | null>(null);
 
-  const loadWallet = async () => {
+  const loadWallet = useCallback(async () => {
     if (!user) return;
     const result = await apiRequest<{ wallet: Wallet }>(API_ENDPOINTS.wallet(user.id));
     if (result.ok) setWallet(result.data.wallet);
     else setError(result.error);
-  };
+  }, [user]);
 
   useEffect(() => {
     void loadWallet();
-    void apiRequest<{ payment: PaymentConfig }>(API_ENDPOINTS.walletPaymentConfig).then((result) => {
-      if (result.ok) setPaymentConfig(result.data.payment);
-    });
     if (user) void apiRequest<WithdrawStatus>(API_ENDPOINTS.walletWithdrawStatus(user.id)).then((result) => {
       if (result.ok) setWithdrawStatus(result.data);
     });
-  }, [user]);
+  }, [loadWallet, user]);
+
+  useEffect(() => {
+    if (!activeOrder || !user || activeOrder.status !== 'PENDING') return undefined;
+    let active = true;
+    let checking = false;
+    const checkStatus = async () => {
+      if (checking) return;
+      checking = true;
+      const result = await apiRequest<{ orderId: string; status: 'COMPLETED' | 'PENDING' | 'FAILED' }>(
+        API_ENDPOINTS.walletZapupiStatus(activeOrder.orderId, user.id),
+      );
+      checking = false;
+      if (!active || !result.ok) return;
+      if (result.data.status === 'COMPLETED') {
+        setActiveOrder(null);
+        setAddWalletVisible(false);
+        setAddAmount('');
+        await loadWallet();
+        if (transactionsVisible) {
+          const transactionsResult = await apiRequest<{ transactions: Transaction[] }>(API_ENDPOINTS.walletTransactions(user.id));
+          if (transactionsResult.ok) setTransactions(transactionsResult.data.transactions);
+        }
+        showWalletAlert('Payment successful', `₹${activeOrder.amount} added to your wallet successfully.`);
+      } else if (result.data.status === 'FAILED') {
+        setActiveOrder((current) => current?.orderId === activeOrder.orderId ? { ...current, status: 'FAILED' } : current);
+      }
+    };
+
+    void checkStatus();
+    const interval = setInterval(() => { void checkStatus(); }, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [activeOrder, loadWallet, transactionsVisible, user]);
+
+  useEffect(() => {
+    if (!activeOrder || remainingSeconds <= 0) return undefined;
+    const interval = setInterval(() => setRemainingSeconds((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => clearInterval(interval);
+  }, [activeOrder, remainingSeconds > 0]);
 
   const showTransactions = async () => {
     setTransactionsVisible(true);
@@ -57,47 +104,48 @@ export default function WalletScreen() {
 
   const openAddWallet = () => {
     setAddAmount('');
-    setTransactionId('');
-    setAddStep('amount');
+    setActiveOrder(null);
+    setRemainingSeconds(300);
     setAddWalletVisible(true);
   };
 
-  const showPaymentQr = () => {
+  const createZapupiOrder = async () => {
     const amount = Number(addAmount);
     if (!Number.isFinite(amount) || amount < 10) {
-      Alert.alert('Minimum amount is ₹10', 'Enter at least ₹10 to continue.');
+      showWalletAlert('Minimum amount is ₹10', 'Enter at least ₹10 to continue.');
       return;
     }
-    if (!paymentConfig?.configured) {
-      Alert.alert('Payment is not configured', 'Ask the administrator to set PAYMENT_UPI_ID on the backend.');
-      return;
-    }
-    setAddStep('qr');
-  };
-
-  const submitDepositRequest = async () => {
-    const amount = Number(addAmount);
-    if (!user || !Number.isFinite(amount) || amount < 10 || !transactionId.trim()) {
-      Alert.alert('Complete the form', 'Enter an amount of at least ₹10 and the transaction ID.');
+    if (!user) {
+      showWalletAlert('Sign in required', 'Sign in before adding money to your wallet.');
       return;
     }
     setAddLoading(true);
-    const result = await apiRequest(API_ENDPOINTS.walletDepositRequest(user.id), { method: 'POST', body: JSON.stringify({ amount, transactionId: transactionId.trim() }) });
+    const result = await apiRequest<ZapupiOrder>(API_ENDPOINTS.walletZapupiCreate, {
+      method: 'POST',
+      body: JSON.stringify({ userId: user.id, amount }),
+    });
     setAddLoading(false);
     if (!result.ok) {
-      Alert.alert('Unable to send request', result.error);
+      showWalletAlert('Unable to start payment', result.error);
       return;
     }
-    setAddAmount('');
-    setTransactionId('');
-    setAddStep('amount');
-    setAddWalletVisible(false);
-    Alert.alert('Request sent', 'Your payment is pending admin approval. Your wallet will be credited after approval.');
+    setRemainingSeconds(300);
+    setActiveOrder(result.data);
   };
 
-  const qrValue = paymentConfig ? `upi://pay?pa=${encodeURIComponent(paymentConfig.upiId)}&pn=${encodeURIComponent(paymentConfig.payeeName)}&am=${encodeURIComponent(Number(addAmount).toFixed(2))}&cu=INR&tn=${encodeURIComponent('Wallet deposit')}` : '';
-  const generatedQrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrValue)}`;
-  const qrImageUrl = paymentConfig?.qrImageUrl ? `${API_BASE_URL}${paymentConfig.qrImageUrl}` : generatedQrImageUrl;
+  const openPaymentCheckout = async () => {
+    if (!activeOrder) return;
+    try {
+      await WebBrowser.openBrowserAsync(activeOrder.paymentUrl);
+    } catch {
+      showWalletAlert('Unable to open checkout', 'Scan the QR code to continue payment.');
+    }
+  };
+
+  const closeAddWallet = () => {
+    setAddWalletVisible(false);
+    setActiveOrder(null);
+  };
 
   return (
     <AccountScreen title="My Wallet">
@@ -137,28 +185,36 @@ export default function WalletScreen() {
           <Text style={styles.updatedText}>Updated {new Date(wallet.updatedAt).toLocaleString()}</Text>
         </> : null}
       </ScrollView>
-      <Modal visible={addWalletVisible} transparent animationType="fade" onRequestClose={() => setAddWalletVisible(false)}>
+      <Modal visible={addWalletVisible} transparent animationType="fade" onRequestClose={closeAddWallet}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{addStep === 'amount' ? 'Add money' : addStep === 'qr' ? 'Pay using QR' : 'Confirm payment'}</Text>
-            {addStep === 'amount' ? <>
-              <Text style={styles.modalSubtitle}>Enter at least ₹10. You will receive a QR code for this amount.</Text>
+            <Text style={styles.modalTitle}>{activeOrder ? 'Complete payment' : 'Add money'}</Text>
+            {!activeOrder ? <>
+              <Text style={styles.modalSubtitle}>Enter at least ₹10. A secure ZapUPI checkout QR will be created for this amount.</Text>
               <TextInput value={addAmount} onChangeText={setAddAmount} keyboardType="decimal-pad" placeholder="100" placeholderTextColor="#73849B" style={styles.amountInput} />
             </> : null}
-            {addStep === 'qr' ? <>
-              <Text style={styles.modalSubtitle}>Pay ₹{Number(addAmount).toFixed(2)} to {paymentConfig?.upiId}, then continue.</Text>
-              <Image source={{ uri: qrImageUrl }} style={styles.qrImage} />
-              <Text style={styles.qrHint}>{paymentConfig?.qrImageUrl ? 'Scan the payment QR code shown above.' : `UPI ID: ${paymentConfig?.upiId}`}</Text>
-            </> : null}
-            {addStep === 'transaction' ? <>
-              <Text style={styles.modalSubtitle}>After paying ₹{Number(addAmount).toFixed(2)}, enter the transaction ID shown by your payment app.</Text>
-              <TextInput value={transactionId} onChangeText={setTransactionId} autoCapitalize="characters" placeholder="Transaction ID" placeholderTextColor="#73849B" style={styles.amountInput} />
+            {activeOrder ? <>
+              <Text style={styles.modalSubtitle}>Scan to pay ₹{activeOrder.amount}. Your wallet is credited after ZapUPI confirms payment.</Text>
+              <View style={styles.qrFrame}><QRCode value={activeOrder.qrValue} size={220} backgroundColor="#FFFFFF" color="#0B1628" /></View>
+              <Text style={[styles.paymentStatus, activeOrder.status === 'FAILED' && styles.paymentFailed]}>
+                {activeOrder.status === 'FAILED' ? 'Payment failed or expired.' : 'Waiting for payment...'}
+              </Text>
+              {activeOrder.status === 'PENDING' ? <>
+                <Text style={styles.countdownText}>
+                  {remainingSeconds > 0
+                    ? `Checkout timer ${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`
+                    : 'Still waiting. Keep this screen open or use the payment app; confirmation can arrive later.'}
+                </Text>
+                <Pressable onPress={openPaymentCheckout} style={styles.upiButton} accessibilityRole="button">
+                  <Text style={styles.upiButtonText}>Pay via UPI App</Text>
+                </Pressable>
+                <Text style={styles.qrHint}>The hosted checkout lets you choose an available UPI app.</Text>
+              </> : null}
             </> : null}
             <View style={styles.modalActions}>
-              <Pressable onPress={() => setAddWalletVisible(false)} style={styles.modalCancel}><Text style={styles.modalCancelText}>Cancel</Text></Pressable>
-              {addStep === 'qr' ? <Pressable onPress={() => setAddStep('transaction')} style={styles.modalConfirm}><Text style={styles.modalConfirmText}>I paid</Text></Pressable> : null}
-              {addStep === 'transaction' ? <Pressable onPress={submitDepositRequest} disabled={addLoading} style={styles.modalConfirm}>{addLoading ? <ActivityIndicator color="#0B1628" /> : <Text style={styles.modalConfirmText}>Send request</Text>}</Pressable> : null}
-              {addStep === 'amount' ? <Pressable onPress={showPaymentQr} style={styles.modalConfirm}><Text style={styles.modalConfirmText}>Show QR</Text></Pressable> : null}
+              <Pressable onPress={closeAddWallet} style={styles.modalCancel}><Text style={styles.modalCancelText}>Cancel</Text></Pressable>
+              {activeOrder?.status === 'FAILED' ? <Pressable onPress={() => setActiveOrder(null)} style={styles.modalConfirm}><Text style={styles.modalConfirmText}>Try again</Text></Pressable> : null}
+              {!activeOrder ? <Pressable onPress={createZapupiOrder} disabled={addLoading} style={styles.modalConfirm}>{addLoading ? <ActivityIndicator color="#0B1628" /> : <Text style={styles.modalConfirmText}>Show QR</Text>}</Pressable> : null}
             </View>
           </View>
         </View>
@@ -222,4 +278,10 @@ const styles = StyleSheet.create({
   modalCancelText: { color: '#FFFFFF', fontWeight: '700' },
   modalConfirm: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 13, borderRadius: 10, backgroundColor: '#F7941D' },
   modalConfirmText: { color: '#0B1628', fontWeight: '800' },
+  qrFrame: { width: 244, height: 244, alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginTop: 18, backgroundColor: '#FFFFFF', borderRadius: 8 },
+  paymentStatus: { color: '#7BD88F', fontSize: 14, fontWeight: '800', textAlign: 'center', marginTop: 14 },
+  paymentFailed: { color: '#FF8A80' },
+  countdownText: { color: '#B8C5D9', fontSize: 12, textAlign: 'center', marginTop: 6 },
+  upiButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 13, borderRadius: 10, backgroundColor: '#203A55', marginTop: 14 },
+  upiButtonText: { color: '#FFFFFF', fontWeight: '800' },
 });

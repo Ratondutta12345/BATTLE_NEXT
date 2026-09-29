@@ -4,8 +4,16 @@ import { SymbolView } from 'expo-symbols';
 import { AccountScreen } from '@/components/account/AccountScreen';
 import { API_ENDPOINTS, apiRequest } from '@/constants/api';
 
-type ContactOption = { id: number; type: 'phone' | 'telegram' | 'email'; label: string; value: string };
-const contactUrl = (option: ContactOption) => option.type === 'phone' ? `tel:${option.value}` : option.type === 'email' ? `mailto:${option.value}` : (option.value.startsWith('http') ? option.value : `https://t.me/${option.value.replace(/^@/, '')}`);
+type ContactOption = { id: number; type: 'phone' | 'telegram' | 'whatsapp' | 'email'; label: string; value: string };
+const contactUrl = (option: ContactOption) => {
+  if (option.type === 'phone') return `tel:${option.value.replace(/[^\d+]/g, '')}`;
+  if (option.type === 'email') return `mailto:${option.value}`;
+  if (option.type === 'whatsapp') {
+    if (/^https?:\/\//i.test(option.value)) return option.value;
+    return `https://wa.me/${option.value.replace(/\D/g, '')}`;
+  }
+  return option.value.startsWith('http') ? option.value : `https://t.me/${option.value.replace(/^@/, '')}`;
+};
 
 export default function ContactScreen() {
   const [options, setOptions] = useState<ContactOption[]>([]);
@@ -15,7 +23,7 @@ export default function ContactScreen() {
     <View style={styles.heading}><Text style={styles.title}>Need a hand?</Text><Text style={styles.subtitle}>Choose a support channel and send us a message.</Text></View>
     {loading ? <ActivityIndicator color="#F7941D" size="large" /> : null}
     {!loading && options.length === 0 ? <Text style={styles.empty}>No contact options are available right now.</Text> : null}
-    {options.map((option) => <Pressable key={option.id} style={({ pressed }) => [styles.option, pressed && styles.pressed]} onPress={() => Linking.openURL(contactUrl(option))} accessibilityRole="button"><View style={styles.icon}><SymbolView name={{ android: option.type === 'phone' ? 'phone' : option.type === 'email' ? 'email' : 'send', ios: option.type === 'phone' ? 'phone.fill' : option.type === 'email' ? 'envelope.fill' : 'paperplane.fill' }} size={22} tintColor="#0B1628" fallback={<Text style={styles.iconFallback}>*</Text>} /></View><View style={styles.optionCopy}><Text style={styles.optionLabel}>{option.label}</Text><Text style={styles.optionValue}>{option.value}</Text></View><Text style={styles.arrow}>›</Text></Pressable>)}
+    {options.map((option) => <Pressable key={option.id} style={({ pressed }) => [styles.option, pressed && styles.pressed]} onPress={() => Linking.openURL(contactUrl(option))} accessibilityRole="button" accessibilityLabel={`${option.label}, ${option.value}`}><View style={styles.icon}><SymbolView name={{ android: option.type === 'phone' ? 'phone' : option.type === 'email' ? 'email' : option.type === 'whatsapp' ? 'chat' : 'send', ios: option.type === 'phone' ? 'phone.fill' : option.type === 'email' ? 'envelope.fill' : option.type === 'whatsapp' ? 'bubble.left.and.bubble.right.fill' : 'paperplane.fill' }} size={22} tintColor="#0B1628" fallback={<Text style={styles.iconFallback}>{option.type === 'phone' ? '☎' : option.type === 'email' ? '✉' : option.type === 'whatsapp' ? '💬' : '➤'}</Text>} /></View><View style={styles.optionCopy}><Text style={styles.optionLabel}>{option.label}</Text><Text style={styles.optionValue}>{option.value}</Text></View><Text style={styles.arrow}>›</Text></Pressable>)}
   </ScrollView></AccountScreen>;
 }
 

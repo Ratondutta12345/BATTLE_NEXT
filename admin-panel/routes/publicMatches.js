@@ -12,13 +12,15 @@ function mapMatch(row, participants = []) {
     gameVersion: row.game_version,
     name: `${row.event_name} #${row.match_id}`,
     matchUrl: row.match_url,
-    matchSchedule: row.match_schedule,
+    matchSchedule: row.match_schedule_utc || row.match_schedule,
+    createdAt: row.created_at,
     prizePool: Number(row.prize_pool ?? 0),
     perKill: Number(row.per_kill ?? 0),
     teamType: row.team_type,
     entryFee: Number(row.entry_fee ?? 0),
     totalPlayers: Number(row.total_players ?? 0),
     joinedPlayers: Number(row.joined_players ?? 0),
+    userEntryCount: Number(row.user_entry_count ?? 0),
     map: row.map_name,
     status: row.status,
     bannerTitle: row.banner_title,
@@ -41,7 +43,8 @@ router.get('/active', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      `SELECT m.id, m.match_id, m.game_id, g.name AS game_name, m.game_version, m.event_name, m.match_schedule,
+      `SELECT m.id, m.match_id, m.game_id, g.name AS game_name, m.game_version, m.event_name,
+        DATE_FORMAT(m.match_schedule, '%Y-%m-%dT%H:%i:%sZ') AS match_schedule_utc,
         m.prize_pool, m.per_kill, m.team_type, m.entry_fee, m.total_players,
         m.map_name, m.status, m.match_banner_id, mb.title AS banner_title, mb.image_url AS banner_url,
         COUNT(mp.id) AS joined_players
@@ -66,6 +69,7 @@ router.get('/active', async (req, res) => {
 
 router.get('/by-status', async (req, res) => {
   const gameId = Number(req.query.gameId);
+  const userId = Number(req.query.userId) || 0;
   const requestedStatus = String(req.query.status || '').toLowerCase();
   const status = { upcoming: 'Upcoming', ongoing: 'Ongoing', complete: 'Complete' }[requestedStatus];
   if (!Number.isInteger(gameId) || gameId <= 0) return res.status(400).json({ error: 'A valid gameId is required' });
@@ -73,10 +77,12 @@ router.get('/by-status', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      `SELECT m.id, m.match_id, m.game_id, g.name AS game_name, m.game_version, m.event_name, m.match_schedule,
+      `SELECT m.id, m.match_id, m.game_id, g.name AS game_name, m.game_version, m.event_name,
+        DATE_FORMAT(m.match_schedule, '%Y-%m-%dT%H:%i:%sZ') AS match_schedule_utc,
         m.prize_pool, m.per_kill, m.team_type, m.entry_fee, m.total_players,
         m.map_name, m.status, m.match_banner_id, mb.title AS banner_title, mb.image_url AS banner_url,
-        COUNT(mp.id) AS joined_players
+        COUNT(mp.id) AS joined_players,
+        (SELECT COUNT(*) FROM match_participants user_mp WHERE user_mp.match_id = m.id AND user_mp.user_id = ?) AS user_entry_count
        FROM matches m
        LEFT JOIN games g ON g.id = m.game_id
        LEFT JOIN match_banners mb ON mb.id = m.match_banner_id
@@ -84,7 +90,7 @@ router.get('/by-status', async (req, res) => {
        WHERE m.game_id = ? AND m.status = ?
        GROUP BY m.id, mb.id
        ORDER BY m.match_schedule ASC, m.created_at DESC`,
-      [gameId, status],
+      [userId, gameId, status],
     );
     res.json({ matches: rows.map((row) => mapMatch(row)) });
   } catch (error) {
@@ -100,7 +106,8 @@ router.get('/:id', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      `SELECT m.*, g.name AS game_name, mb.title AS banner_title, mb.image_url AS banner_url,
+      `SELECT m.*, DATE_FORMAT(m.match_schedule, '%Y-%m-%dT%H:%i:%sZ') AS match_schedule_utc,
+        g.name AS game_name, mb.title AS banner_title, mb.image_url AS banner_url,
         r.title AS rule_title, r.content AS rule_content,
         (SELECT COUNT(*) FROM match_participants mp WHERE mp.match_id = m.id) AS joined_players
        FROM matches m
@@ -128,6 +135,7 @@ router.get('/:id', async (req, res) => {
     const isJoined = Number.isInteger(userId) && userId > 0 && participants.some((participant) => participant.user_id === userId);
     const match = mapMatch(rows[0], participants.map((participant) => ({
       id: participant.id,
+      userId: participant.user_id,
       username: participant.username,
       name: participant.name,
       inGameName: participant.in_game_name,
@@ -151,6 +159,37 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+router.patch('/:id/entry', async (req, res) => {
+  const matchId = Number(req.params.id);
+  const userId = Number(req.body.userId);
+  const inGameName = String(req.body.inGameName || '').trim();
+
+  if (!Number.isInteger(matchId) || matchId <= 0) return res.status(400).json({ error: 'Invalid match id' });
+  if (!Number.isInteger(userId) || userId <= 0) return res.status(401).json({ error: 'Please log in to edit this entry.' });
+  if (!inGameName || inGameName.length > 150) return res.status(400).json({ error: 'Enter a game name between 1 and 150 characters.' });
+
+  try {
+    const [matches] = await pool.query('SELECT status FROM matches WHERE id = ?', [matchId]);
+    if (!matches[0]) return res.status(404).json({ error: 'Match not found.' });
+    if (matches[0].status !== 'Upcoming') return res.status(409).json({ error: 'Entries can only be edited before the match starts.' });
+
+    const [entries] = await pool.query(
+      'SELECT id FROM match_participants WHERE match_id = ? AND user_id = ? LIMIT 1',
+      [matchId, userId],
+    );
+    if (!entries[0]) return res.status(404).json({ error: 'You have not joined this match.' });
+
+    await pool.query(
+      'UPDATE match_participants SET in_game_name = ? WHERE match_id = ? AND user_id = ?',
+      [inGameName, matchId, userId],
+    );
+    res.json({ message: 'Entry updated.', inGameName });
+  } catch (error) {
+    console.error('PATCH /api/matches/:id/entry failed:', error);
+    res.status(500).json({ error: 'Failed to update match entry.' });
+  }
+});
+
 router.post('/:id/join', async (req, res) => {
   const matchId = Number(req.params.id);
   const userId = Number(req.body.userId);
@@ -165,7 +204,7 @@ router.post('/:id/join', async (req, res) => {
   try {
     await connection.beginTransaction();
     const [matches] = await connection.query(
-      'SELECT id, entry_fee, total_players, status FROM matches WHERE id = ? AND status IN (\'Upcoming\', \'Ongoing\')',
+      'SELECT id, entry_fee, total_players, status FROM matches WHERE id = ? AND status IN (\'Upcoming\', \'Ongoing\') FOR UPDATE',
       [matchId],
     );
     if (!matches[0]) {
@@ -174,12 +213,12 @@ router.post('/:id/join', async (req, res) => {
     }
 
     const [existing] = await connection.query(
-      'SELECT id FROM match_participants WHERE match_id = ? AND user_id = ? LIMIT 1',
+      'SELECT COUNT(*) AS entry_count FROM match_participants WHERE match_id = ? AND user_id = ?',
       [matchId, userId],
     );
-    if (existing[0]) {
+    if (Number(existing[0].entry_count) >= 2) {
       await connection.rollback();
-      return res.status(409).json({ error: 'You have already joined this match.' });
+      return res.status(409).json({ error: 'You have already joined this match with the maximum number of entries.' });
     }
 
     const [countRows] = await connection.query(

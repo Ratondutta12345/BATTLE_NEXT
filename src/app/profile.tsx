@@ -54,7 +54,7 @@ export default function ProfileScreen() {
     apiRequest<{ user: AuthUser }>(API_ENDPOINTS.userProfile(user.id)).then((result) => {
       if (result.ok) {
         setProfile(result.data.user);
-        setUser(result.data.user);
+        void setUser(result.data.user);
       }
     });
   }, [user?.id, setUser]);
@@ -85,7 +85,7 @@ export default function ProfileScreen() {
       if (!response.ok) throw new Error(data.error || 'Upload failed');
       const nextProfile = { ...(profile || user), avatarUrl: data.avatarUrl };
       setProfile(nextProfile);
-      setUser(nextProfile);
+      await setUser(nextProfile);
     } catch (error) {
       Alert.alert('Upload failed', error instanceof Error ? error.message : 'Could not upload image.');
     }
@@ -136,7 +136,7 @@ export default function ProfileScreen() {
       </View>
       <View style={styles.menu}>
         {menuItems.map((item) => <Pressable key={item.label} style={styles.menuButton} onPress={'route' in item ? () => router.push(item.route as never) : item.onPress} accessibilityRole="button"><View style={styles.menuIcon}><SymbolView name={{ android: item.icon, ios: item.icon }} size={20} tintColor="#F7941D" fallback={<Text style={styles.iconFallback}>•</Text>} /></View><Text style={styles.menuText}>{item.label}</Text><Text style={styles.chevron}>›</Text></Pressable>)}
-        <Pressable style={[styles.menuButton, styles.logoutButton]} onPress={() => { signOut(); router.replace('/login'); }} accessibilityRole="button"><View style={styles.menuIcon}><SymbolView name={{ android: 'logout', ios: 'rectangle.portrait.and.arrow.right' }} size={20} tintColor="#E36B5D" fallback={<Text style={styles.iconFallback}>•</Text>} /></View><Text style={styles.logoutText}>Log Out</Text><Text style={styles.chevron}>›</Text></Pressable>
+        <Pressable style={[styles.menuButton, styles.logoutButton]} onPress={async () => { await signOut(); router.replace('/login'); }} accessibilityRole="button"><View style={styles.menuIcon}><SymbolView name={{ android: 'logout', ios: 'rectangle.portrait.and.arrow.right' }} size={20} tintColor="#E36B5D" fallback={<Text style={styles.iconFallback}>•</Text>} /></View><Text style={styles.logoutText}>Log Out</Text><Text style={styles.chevron}>›</Text></Pressable>
       </View>
     </ScrollView>
     <BottomNav />

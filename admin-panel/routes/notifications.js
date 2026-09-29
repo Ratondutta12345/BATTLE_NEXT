@@ -9,6 +9,8 @@ function mapNotification(row) {
     id: row.id,
     title: row.title,
     message: row.message,
+    link: row.link || null,
+    iconUrl: row.icon_url || null,
     isActive: Boolean(row.is_active),
     isRead: row.is_read === undefined ? undefined : Boolean(row.is_read),
     createdAt: row.created_at,
@@ -22,7 +24,7 @@ router.get('/', async (req, res) => {
 
   try {
     const [rows] = await pool.query(
-      `SELECT n.id, n.title, n.message, n.is_active, n.created_at, n.updated_at,
+            `SELECT n.id, n.title, n.message, n.link, n.icon_url, n.is_active, n.created_at, n.updated_at,
               CASE WHEN r.notification_id IS NULL THEN 0 ELSE 1 END AS is_read
        FROM notifications n
        LEFT JOIN notification_reads r ON r.notification_id = n.id AND r.user_id = ?
@@ -57,7 +59,7 @@ router.post('/read-all', async (req, res) => {
 router.get('/admin', requireAdminKey, async (_req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT id, title, message, is_active, created_at, updated_at
+      `SELECT id, title, message, link, icon_url, is_active, created_at, updated_at
        FROM notifications ORDER BY created_at DESC`,
     );
     res.json({ notifications: rows.map(mapNotification) });
@@ -68,13 +70,13 @@ router.get('/admin', requireAdminKey, async (_req, res) => {
 });
 
 router.post('/', requireAdminKey, async (req, res) => {
-  const { title, message, isActive = true } = req.body;
+  const { title, message, link, iconUrl, isActive = true } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: 'Notification message is required' });
 
   try {
     const [result] = await pool.query(
-      `INSERT INTO notifications (title, message, is_active) VALUES (?, ?, ?)`,
-      [title?.trim() || null, message.trim(), isActive ? 1 : 0],
+      `INSERT INTO notifications (title, message, link, icon_url, is_active) VALUES (?, ?, ?, ?, ?)`,
+      [title?.trim() || null, message.trim(), link || null, iconUrl || null, isActive ? 1 : 0],
     );
     const [rows] = await pool.query('SELECT * FROM notifications WHERE id = ?', [result.insertId]);
     res.status(201).json({ notification: mapNotification(rows[0]) });
@@ -95,8 +97,8 @@ router.put('/:id', requireAdminKey, async (req, res) => {
     if (!existing[0]) return res.status(404).json({ error: 'Notification not found' });
     const current = existing[0];
     await pool.query(
-      `UPDATE notifications SET title = ?, message = ?, is_active = ? WHERE id = ?`,
-      [title !== undefined ? title?.trim() || null : current.title, message !== undefined ? String(message).trim() : current.message, isActive !== undefined ? (isActive ? 1 : 0) : current.is_active, id],
+      `UPDATE notifications SET title = ?, message = ?, link = ?, icon_url = ?, is_active = ? WHERE id = ?`,
+      [title !== undefined ? title?.trim() || null : current.title, message !== undefined ? String(message).trim() : current.message, req.body.link !== undefined ? req.body.link || null : current.link, req.body.iconUrl !== undefined ? req.body.iconUrl || null : current.icon_url, isActive !== undefined ? (isActive ? 1 : 0) : current.is_active, id],
     );
     const [rows] = await pool.query('SELECT * FROM notifications WHERE id = ?', [id]);
     res.json({ notification: mapNotification(rows[0]) });
