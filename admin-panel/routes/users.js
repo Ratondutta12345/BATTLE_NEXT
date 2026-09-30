@@ -7,6 +7,7 @@ const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
 
 const router = express.Router();
+const WELCOME_BONUS_COINS = 5;
 const avatarDirectory = path.join(__dirname, '..', 'public', 'uploads', 'users');
 fs.mkdirSync(avatarDirectory, { recursive: true });
 const avatarUpload = multer({
@@ -193,11 +194,14 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'All required fields must be provided' });
   }
 
+  const connection = await pool.getConnection();
   try {
     const passwordHash = hashPassword(password);
     const code = (referralCode || promoCode || '').trim() || null;
 
-    const [result] = await pool.query(
+    await connection.beginTransaction();
+
+    const [result] = await connection.query(
       `INSERT INTO users (first_name, last_name, username, country_code, mobile, email, password_hash, referral_code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -212,6 +216,17 @@ router.post('/', async (req, res) => {
       ],
     );
 
+    await connection.query(
+      'INSERT INTO wallets (user_id, coin_balance) VALUES (?, ?)',
+      [result.insertId, WELCOME_BONUS_COINS],
+    );
+    await connection.query(
+      `INSERT INTO wallet_transactions (user_id, transaction_type, amount, description) VALUES (?, ?, ?, ?)`,
+      [result.insertId, 'added', WELCOME_BONUS_COINS, 'Welcome bonus on signup'],
+    );
+
+    await connection.commit();
+
     res.status(201).json({
       user: {
         id: result.insertId,
@@ -221,9 +236,12 @@ router.post('/', async (req, res) => {
         username: username.trim(),
         mobileNo: `${countryCode.trim()} ${mobileNumber}`,
         email: email.trim().toLowerCase(),
+        coinBalance: WELCOME_BONUS_COINS,
       },
     });
   } catch (error) {
+    await connection.rollback().catch(() => {});
+
     if (error.code === 'ER_DUP_ENTRY') {
       const message = error.message.includes('username')
         ? 'Username is already taken'
@@ -235,6 +253,8 @@ router.post('/', async (req, res) => {
 
     console.error('POST /api/users failed:', error);
     res.status(500).json({ error: 'Failed to create user' });
+  } finally {
+    connection.release();
   }
 });
 
