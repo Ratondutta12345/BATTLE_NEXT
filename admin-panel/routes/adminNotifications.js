@@ -68,6 +68,7 @@ router.post('/send', requireAdminKey, async (req, res) => {
   if (link === undefined) return res.status(400).json({ error: 'Link must be an http(s) URL, app deep link, or in-app path.' });
   if (iconUrl === undefined) return res.status(400).json({ error: 'Icon image must be an http(s) URL.' });
 
+  let notificationSaved = false;
   try {
     const [tokenRows] = await pool.query(
       `SELECT upt.token FROM user_push_tokens upt
@@ -79,6 +80,11 @@ router.post('/send', requireAdminKey, async (req, res) => {
         error: 'No registered devices. Install the built app, allow notifications, and sign in on at least one device before sending.',
       });
     }
+    const [notificationResult] = await pool.query(
+      `INSERT INTO notifications (title, message, link, icon_url, is_active) VALUES (?, ?, ?, ?, 1)`,
+      [title, message, link, iconUrl],
+    );
+    notificationSaved = true;
     const delivery = await sendPushNotification({
       title,
       message,
@@ -89,10 +95,13 @@ router.post('/send', requireAdminKey, async (req, res) => {
     if (delivery.invalidTokens.length) {
       await pool.query('DELETE FROM user_push_tokens WHERE token IN (?)', [delivery.invalidTokens]);
     }
-    res.json({ ok: true, devices: tokenRows.length, ...delivery });
+    res.json({ ok: true, notificationId: notificationResult.insertId, devices: tokenRows.length, ...delivery });
   } catch (error) {
     console.error('POST /api/admin/notifications/send failed:', error);
-    res.status(502).json({ error: 'Push delivery failed. Check Firebase/Expo credentials and try again.' });
+    const message = notificationSaved
+      ? 'The notification was saved in the app, but push delivery failed. Check Firebase/Expo credentials.'
+      : 'Push delivery failed. Check Firebase/Expo credentials and try again.';
+    res.status(502).json({ error: message });
   }
 });
 

@@ -1144,7 +1144,7 @@ async function submitPushNotification(event) {
       body: JSON.stringify({ title: form.get('title'), message: form.get('message'), link: form.get('link'), iconUrl }),
     });
     formElement.reset();
-    window.alert(`Sent to ${result.devices} registered devices: ${result.sent} accepted, ${result.failed} failed.`);
+    window.alert(`Sent to ${result.devices} registered devices: ${result.sent} accepted, ${result.failed} failed. The notification is also available in the app's Notifications screen.`);
   } catch (error) {
     state.error = error.message;
     renderPage();

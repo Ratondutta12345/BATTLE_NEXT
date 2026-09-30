@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const admin = require('firebase-admin');
+const { cert, getApp, getApps, initializeApp } = require('firebase-admin/app');
+const { getMessaging } = require('firebase-admin/messaging');
 
 const adminRoot = path.resolve(__dirname, '..');
 const serviceAccountDirectory = path.join(adminRoot, 'firebase');
@@ -34,22 +35,22 @@ function readServiceAccount() {
 }
 
 function getFirebaseApp() {
-  if (admin.apps.length) return admin.app();
+  if (getApps().length) return getApp();
   const serviceAccount = readServiceAccount();
   const projectId = process.env.FIREBASE_PROJECT_ID || serviceAccount.projectId || serviceAccount.project_id;
-  admin.initializeApp({
-    credential: admin.credential.cert({
+  initializeApp({
+    credential: cert({
       projectId,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL || serviceAccount.clientEmail || serviceAccount.client_email,
       privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n') || serviceAccount.privateKey || serviceAccount.private_key,
     }),
     projectId,
   });
-  return admin.app();
+  return getApp();
 }
 
 function getFirebaseMessaging() {
-  return getFirebaseApp().messaging();
+  return getMessaging(getFirebaseApp());
 }
 
 module.exports = { getFirebaseMessaging };
