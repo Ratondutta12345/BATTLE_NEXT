@@ -193,11 +193,15 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'All required fields must be provided' });
   }
 
+  let connection;
   try {
     const passwordHash = hashPassword(password);
     const code = (referralCode || promoCode || '').trim() || null;
 
-    const [result] = await pool.query(
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [result] = await connection.query(
       `INSERT INTO users (first_name, last_name, username, country_code, mobile, email, password_hash, referral_code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -212,6 +216,15 @@ router.post('/', async (req, res) => {
       ],
     );
 
+    await connection.query(
+      `INSERT INTO wallets (user_id, coin_balance, deposit_balance, winning_balance, bonus_balance)
+       VALUES (?, 0, 0, 0, 0)
+       ON DUPLICATE KEY UPDATE user_id = user_id`,
+      [result.insertId],
+    );
+
+    await connection.commit();
+
     res.status(201).json({
       user: {
         id: result.insertId,
@@ -224,6 +237,14 @@ router.post('/', async (req, res) => {
       },
     });
   } catch (error) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error('POST /api/users rollback failed:', rollbackError);
+      }
+    }
+
     if (error.code === 'ER_DUP_ENTRY') {
       const message = error.message.includes('username')
         ? 'Username is already taken'
@@ -235,6 +256,8 @@ router.post('/', async (req, res) => {
 
     console.error('POST /api/users failed:', error);
     res.status(500).json({ error: 'Failed to create user' });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
