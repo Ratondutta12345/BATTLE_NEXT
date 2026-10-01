@@ -146,6 +146,15 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS staff_accounts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(40) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  session_version INT UNSIGNED NOT NULL DEFAULT 1,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS banners (
   id INT AUTO_INCREMENT PRIMARY KEY,
   key_name VARCHAR(180) NOT NULL UNIQUE,
@@ -224,11 +233,13 @@ CREATE TABLE IF NOT EXISTS matches (
   room_password VARCHAR(150) NULL,
   match_type VARCHAR(50) NOT NULL DEFAULT 'Paid',
   status VARCHAR(30) NOT NULL DEFAULT 'Upcoming',
+  completed_at DATETIME NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_matches_schedule (match_schedule),
   INDEX idx_matches_status (status),
   INDEX idx_matches_game (game_id),
+  INDEX idx_matches_game_status_completed (game_id, status, completed_at),
   INDEX idx_matches_match_banner (match_banner_id),
   INDEX idx_matches_rule (rule_id),
   CONSTRAINT fk_matches_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE SET NULL,

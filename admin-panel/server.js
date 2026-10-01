@@ -7,6 +7,7 @@ const pool = require('./lib/db');
 const { initDatabase } = require('./lib/initDb');
 const usersRouter = require('./routes/users');
 const authRouter = require('./routes/auth');
+const adminLoginRouter = require('./routes/adminLogin');
 const announcementsRouter = require('./routes/announcements');
 const notificationsRouter = require('./routes/notifications');
 const deviceTokensRouter = require('./routes/deviceTokens');
@@ -21,14 +22,39 @@ const matchesRouter = require('./routes/matches');
 const rulesRouter = require('./routes/rules');
 const matchBannersRouter = require('./routes/matchBanners');
 const publicMatchesRouter = require('./routes/publicMatches');
+const { staffRouter, managementRouter: staffManagementRouter } = require('./routes/staff');
+const { uploadRoot } = require('./lib/uploads');
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const host = process.env.HOST || '0.0.0.0';
+const staffPanelHost = normalizeHostname(process.env.STAFF_PANEL_HOST);
+const allowedCorsOrigins = String(process.env.CORS_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 let server;
 let isShuttingDown = false;
 
-app.use(cors());
+function normalizeHostname(value = '') {
+  if (!value.trim()) return '';
+  try {
+    return new URL(value.includes('://') ? value : `https://${value}`).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+app.set('trust proxy', 1);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedCorsOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  },
+}));
 app.use('/api/wallet/zapupi-webhook', express.raw({
   type: ['application/json', 'application/x-www-form-urlencoded'],
   limit: '100kb',
@@ -44,7 +70,28 @@ app.use('/api/wallet/zapupi-webhook', express.raw({
   }
 });
 app.use(express.json());
+app.use((req, res, next) => {
+  if (!staffPanelHost || normalizeHostname(req.get('host')) !== staffPanelHost) return next();
+  if (req.path === '/' || req.path === '/index.html') {
+    return res.redirect('/stuff-admin-panel/login.html');
+  }
+  if (req.path.startsWith('/api/')) {
+    const staffApi = req.path === '/api/staff' || req.path.startsWith('/api/staff/');
+    const matchApi = req.path === '/api/admin/matches' || req.path.startsWith('/api/admin/matches/')
+      || req.path === '/api/matches' || req.path.startsWith('/api/matches/');
+    if (staffApi || matchApi) return next();
+    return res.status(404).json({ error: 'This API endpoint is not available on the staff domain.' });
+  }
+  const staffAsset = req.path === '/app.js' || req.path === '/styles.css'
+    || req.path === '/stuff-admin-panel' || req.path.startsWith('/stuff-admin-panel/')
+    || req.path.startsWith('/uploads/');
+  return staffAsset ? next() : res.redirect('/stuff-admin-panel/login.html');
+});
+app.use('/uploads', express.static(uploadRoot));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/stuff-admin-panel', express.static(path.join(__dirname, '..', 'stuff-admin-panel')));
+app.get('/stuff-admin-panel', (_req, res) => res.redirect('/stuff-admin-panel/login.html'));
+app.get('/stuff-admin-panel/', (_req, res) => res.redirect('/stuff-admin-panel/login.html'));
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -58,6 +105,9 @@ app.get('/api/health', async (_req, res) => {
 
 app.use('/api/users', usersRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/admin/auth', adminLoginRouter);
+app.use('/api/staff', staffRouter);
+app.use('/api/admin/staff', staffManagementRouter);
 app.use('/api/announcements', announcementsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/notifications', deviceTokensRouter);

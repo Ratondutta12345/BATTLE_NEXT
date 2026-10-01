@@ -89,7 +89,7 @@ router.get('/by-status', async (req, res) => {
        LEFT JOIN match_participants mp ON mp.match_id = m.id
        WHERE m.game_id = ? AND m.status = ?
        GROUP BY m.id, mb.id
-       ORDER BY m.match_schedule ASC, m.created_at DESC`,
+      ORDER BY ${status === 'Complete' ? 'm.completed_at DESC, m.id DESC LIMIT 15' : 'm.match_schedule ASC, m.created_at DESC'}`,
       [userId, gameId, status],
     );
     res.json({ matches: rows.map((row) => mapMatch(row)) });

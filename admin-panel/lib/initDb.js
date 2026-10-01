@@ -219,11 +219,13 @@ const CREATE_MATCHES_TABLE = `
     room_password VARCHAR(150) NULL,
     match_type VARCHAR(50) NOT NULL DEFAULT 'Paid',
     status VARCHAR(30) NOT NULL DEFAULT 'Upcoming',
+    completed_at DATETIME NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_matches_schedule (match_schedule),
     KEY idx_matches_status (status),
     KEY idx_matches_game (game_id),
+    KEY idx_matches_game_status_completed (game_id, status, completed_at),
     KEY idx_matches_match_banner (match_banner_id),
     KEY idx_matches_rule (rule_id),
     CONSTRAINT fk_matches_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE SET NULL,
@@ -286,6 +288,41 @@ const CREATE_APP_SETTINGS_TABLE = `
   )
 `;
 
+const CREATE_ADMIN_ACCOUNTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS admin_accounts (
+    id TINYINT UNSIGNED PRIMARY KEY,
+    username VARCHAR(40) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    session_version INT UNSIGNED NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT chk_single_admin_account CHECK (id = 1)
+  ) ENGINE=InnoDB
+`;
+
+const CREATE_ADMIN_VERIFICATION_TABLE = `
+  CREATE TABLE IF NOT EXISTS admin_verification_codes (
+    id TINYINT UNSIGNED PRIMARY KEY,
+    purpose VARCHAR(20) NOT NULL,
+    code_hash VARCHAR(255) NOT NULL,
+    expires_at DATETIME NOT NULL,
+    attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_single_admin_verification CHECK (id = 1)
+  ) ENGINE=InnoDB
+`;
+
+const CREATE_STAFF_ACCOUNTS_TABLE = `
+  CREATE TABLE IF NOT EXISTS staff_accounts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(40) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    session_version INT UNSIGNED NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB
+`;
+
 const CREATE_RULES_TABLE = `
   CREATE TABLE IF NOT EXISTS rules (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -326,6 +363,20 @@ async function ensureColumn(table, column, definition) {
 
   if (rows[0].count === 0) {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+async function ensureIndex(table, index, columns) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS count
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND INDEX_NAME = ?`,
+    [table, index],
+  );
+  if (rows[0].count === 0) {
+    await pool.query(`ALTER TABLE ${table} ADD INDEX ${index} (${columns})`);
   }
 }
 
@@ -443,6 +494,9 @@ async function initDatabase() {
   await pool.query(CREATE_MATCH_BANNERS_TABLE);
   await ensureColumn('match_banners', 'match_slot', 'VARCHAR(100) NOT NULL DEFAULT "all"');
   await pool.query(CREATE_MATCHES_TABLE);
+  await ensureColumn('matches', 'completed_at', 'DATETIME NULL');
+  await ensureIndex('matches', 'idx_matches_game_status_completed', 'game_id, status, completed_at');
+  await pool.query("UPDATE matches SET completed_at = updated_at WHERE status = 'Complete' AND completed_at IS NULL");
   await ensureColumn('matches', 'match_slot', 'VARCHAR(100) NOT NULL DEFAULT "all"');
   await ensureColumn('matches', 'game_version', 'VARCHAR(100) NOT NULL DEFAULT "Current"');
   await ensureColumn('matches', 'match_banner_id', 'INT NULL');
@@ -479,6 +533,9 @@ async function initDatabase() {
   await ensureColumn('match_participants', 'prize_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await pool.query(CREATE_MATCH_RESULTS_TABLE);
   await pool.query(CREATE_APP_SETTINGS_TABLE);
+  await pool.query(CREATE_ADMIN_ACCOUNTS_TABLE);
+  await pool.query(CREATE_ADMIN_VERIFICATION_TABLE);
+  await pool.query(CREATE_STAFF_ACCOUNTS_TABLE);
   await pool.query(CREATE_RULES_TABLE);
   await ensureColumn('rules', 'match_slot', 'VARCHAR(100) NOT NULL DEFAULT "all"');
   await seedDefaults();

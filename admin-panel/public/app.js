@@ -1,3 +1,5 @@
+const isStaffPanel = window.location.pathname.startsWith('/stuff-admin-panel/');
+
 const state = {
   users: [],
   depositRequests: [],
@@ -32,7 +34,13 @@ const state = {
   editingRule: null,
   editingMatch: null,
   selectedMatchIds: new Set(),
-  adminKey: localStorage.getItem('adminKey') || '',
+  staffAccounts: [],
+  adminToken: sessionStorage.getItem(isStaffPanel ? 'stuffAdminToken' : 'adminToken') || '',
+  adminAccount: null,
+  adminStatus: null,
+  authView: 'login',
+  authMessage: '',
+  authError: '',
 };
 
 const appEl = document.getElementById('app');
@@ -80,14 +88,107 @@ const escapeHtml = (value) => String(value ?? '').replaceAll('&', '&amp;').repla
 const apiFetch = async (url, options = {}) => {
   const headers = {
     ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-    ...(state.adminKey ? { 'x-admin-key': state.adminKey } : {}),
+    ...(state.adminToken ? { Authorization: `Bearer ${state.adminToken}` } : {}),
     ...(options.headers || {}),
   };
   const response = await fetch(url, { ...options, headers });
   const data = await response.json().catch(() => ({}));
+  const publicAdminAuthRoutes = ['/api/admin/auth/status', '/api/admin/auth/request-code', '/api/admin/auth/setup', '/api/admin/auth/login', '/api/admin/auth/reset', '/api/admin/auth/delete'];
+  if (response.status === 401 && state.adminToken && !publicAdminAuthRoutes.includes(url)) {
+    clearAdminSession();
+    if (isStaffPanel) {
+      window.location.replace('/stuff-admin-panel/login.html');
+      return;
+    }
+    renderAuthPage();
+  }
   if (!response.ok) throw new Error(data.error || 'Request failed');
   return data;
 };
+
+function clearAdminSession() {
+  state.adminToken = '';
+  state.adminAccount = null;
+  sessionStorage.removeItem(isStaffPanel ? 'stuffAdminToken' : 'adminToken');
+}
+
+async function adminAuthRequest(path, body) {
+  const response = await fetch(`/api/admin/auth/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+function renderAuthPage() {
+  const configured = Boolean(state.adminStatus?.configured);
+  const mode = state.authView;
+  const title = !configured ? 'Create admin login' : mode === 'reset' ? 'Reset password' : mode === 'delete' ? 'Remove admin login' : 'Admin sign in';
+  const ownerEmail = escapeHtml(state.adminStatus?.ownerEmail || 'the code-defined owner email');
+  const description = mode === 'setup'
+    ? `The admin account uses ${ownerEmail}. Create it from localhost; no email verification code is needed.`
+    : `Recovery codes are sent to ${ownerEmail}.`;
+  const isLogin = configured && mode === 'login';
+  const action = isLogin ? 'login' : mode;
+  const passwordLabel = mode === 'reset' ? 'New password' : 'Password';
+  const showCode = !isLogin && mode !== 'setup';
+  const credentialFields = mode === 'setup'
+    ? `<label>Default admin email<input name="email" type="email" value="${ownerEmail}" readonly /></label><label>Username<input name="username" autocomplete="username" minlength="3" maxlength="40" required /></label><label>Password<input name="password" type="password" autocomplete="new-password" minlength="10" required /></label>`
+    : mode === 'reset'
+      ? `<label>${passwordLabel}<input name="password" type="password" autocomplete="new-password" minlength="10" required /></label>`
+      : isLogin
+        ? '<label>Username<input name="username" autocomplete="username" required /></label><label>Password<input name="password" type="password" autocomplete="current-password" required /></label>'
+        : '';
+  appEl.innerHTML = `<main class="admin-auth-shell"><section class="admin-auth-panel"><div class="admin-auth-brand"><span class="brand-mark">B</span><div><strong>BATTLE-NEXT</strong><span>ADMIN PANEL</span></div></div><p class="dashboard-eyebrow">SECURE ACCESS</p><h1>${title}</h1><p class="admin-auth-description">${isLogin ? 'Sign in with your admin username and password.' : description}</p>${state.authError ? `<div class="state-box error">${escapeHtml(state.authError)}</div>` : ''}${state.authMessage ? `<div class="state-box auth-notice">${escapeHtml(state.authMessage)}</div>` : ''}<form id="admin-auth-form" class="admin-auth-form" data-auth-action="${action}">${showCode ? `<label>Email verification code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required /></label>` : ''}${credentialFields}<button class="btn-primary" type="submit">${isLogin ? 'Sign in' : mode === 'setup' ? 'Create admin account' : mode === 'reset' ? 'Save new password' : 'Delete admin credentials'}</button></form>${showCode ? `<button class="btn-secondary auth-code-button" type="button" data-request-auth-code="${mode}">Send code to owner email</button>` : ''}${configured ? `<div class="auth-links">${mode !== 'login' ? '<button type="button" data-auth-view="login">Back to sign in</button>' : '<button type="button" data-auth-view="reset">Forgot password?</button><button type="button" data-auth-view="delete">Remove admin credentials</button>'}</div>` : ''}</section></main>`;
+  appEl.querySelector('#admin-auth-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    state.authError = '';
+    state.authMessage = '';
+    const form = new FormData(event.currentTarget);
+    const payload = Object.fromEntries(form.entries());
+    try {
+      if (action === 'login') {
+        const data = await adminAuthRequest('login', payload);
+        state.adminToken = data.token;
+        state.adminAccount = { username: data.username, ownerEmail: state.adminStatus.ownerEmail };
+        sessionStorage.setItem('adminToken', data.token);
+        state.activeSection = 'dashboard';
+        await loadActiveSection();
+        return;
+      }
+      if (action === 'setup') await adminAuthRequest('setup', payload);
+      if (action === 'reset') await adminAuthRequest('reset', { ...payload, purpose: 'reset' });
+      if (action === 'delete') await adminAuthRequest('delete', { ...payload, purpose: 'delete' });
+      state.adminStatus = (await fetch('/api/admin/auth/status').then((response) => response.json()));
+      state.authView = state.adminStatus.configured ? 'login' : 'setup';
+      state.authMessage = action === 'delete' ? 'Admin credentials removed.' : action === 'reset' ? 'Password updated. Sign in with your new password.' : 'Admin account created. Sign in to continue.';
+      renderAuthPage();
+    } catch (error) {
+      state.authError = error.message;
+      renderAuthPage();
+    }
+  });
+  appEl.querySelector('[data-request-auth-code]')?.addEventListener('click', async (event) => {
+    state.authError = '';
+    state.authMessage = '';
+    try {
+      const data = await adminAuthRequest('request-code', { purpose: event.currentTarget.dataset.requestAuthCode });
+      state.authMessage = data.message;
+    } catch (error) {
+      state.authError = error.message;
+    }
+    renderAuthPage();
+  });
+  appEl.querySelectorAll('[data-auth-view]').forEach((button) => button.addEventListener('click', () => {
+    state.authView = button.dataset.authView;
+    state.authMessage = '';
+    state.authError = '';
+    renderAuthPage();
+  }));
+}
 
 const filteredUsers = () => {
   const query = state.search.trim().toLowerCase();
@@ -257,6 +358,13 @@ function renderSendNotification() {
   return `<section class="panel"><div class="announcement-panel-header"><h2>Compose push notification</h2></div><form id="send-notification-form" class="announcement-form"><label>Title<input name="title" maxlength="255" required placeholder="Notification title" /></label><label>Notification text<textarea name="message" maxlength="2000" required placeholder="Write a message for all app users"></textarea></label><label>Link / URL<input name="link" maxlength="1000" placeholder="https://example.com or /match/123" /></label><label>Icon / image URL<input name="iconUrl" type="url" maxlength="1000" placeholder="https://example.com/notification-image.png" /></label><label>Upload icon / image<input name="iconFile" type="file" accept="image/png,image/jpeg,image/webp" /></label><div class="form-actions"><button class="btn-primary" type="submit">Send Notification</button></div></form></section>`;
 }
 
+function renderAdminAccount() {
+  const username = state.adminAccount?.username || '';
+  const ownerEmail = state.adminAccount?.ownerEmail || state.adminStatus?.ownerEmail || '';
+  const staffRows = state.staffAccounts.map((staff) => `<article class="announcement-row"><div><div class="announcement-row-title">${escapeHtml(staff.username)}</div><small>Created ${escapeHtml(formatDate(staff.createdAt))}</small></div><button class="btn-danger" data-delete-staff="${staff.id}">Remove staff</button></article>`).join('');
+  return `<section class="panel admin-account-panel"><div class="announcement-panel-header"><h2>Admin credentials</h2><p class="page-subtitle">The recovery email is fixed in backend source code and cannot be changed here.</p></div><dl class="admin-account-details"><div><dt>Username</dt><dd>${escapeHtml(username)}</dd></div><div><dt>Recovery email</dt><dd>${escapeHtml(ownerEmail)}</dd></div></dl></section><section class="panel admin-account-panel"><div class="announcement-panel-header"><h2>Change username or password</h2><p class="page-subtitle">Enter your current password to confirm this change.</p></div><form id="admin-change-form" class="announcement-form"><label>Current password<input name="currentPassword" type="password" autocomplete="current-password" required /></label><label>New username<input name="username" minlength="3" maxlength="40" value="${escapeHtml(username)}" autocomplete="username" /></label><label>New password<input name="password" type="password" minlength="10" autocomplete="new-password" placeholder="Leave blank to keep current password" /></label><div class="form-actions"><button class="btn-primary" type="submit">Update credentials</button></div></form></section><section class="panel admin-account-panel"><div class="announcement-panel-header"><h2>Staff sign up</h2><p class="page-subtitle">Create a staff login for match management. Staff accounts can only access match operations.</p></div><form id="staff-create-form" class="announcement-form"><label>Staff username<input name="username" minlength="3" maxlength="40" autocomplete="off" required /></label><label>Staff password<input name="password" type="password" minlength="10" maxlength="200" autocomplete="new-password" required /></label><div class="form-actions"><button class="btn-primary" type="submit">Create staff login</button><a class="btn-secondary" href="/stuff-admin-panel/login.html" target="_blank" rel="noreferrer">Open staff panel</a></div></form><div class="panel-toolbar"><strong>Staff accounts</strong><span class="count-badge">${state.staffAccounts.length}</span></div>${staffRows || '<div class="state-box">No staff accounts created.</div>'}</section><section class="panel admin-account-panel danger-zone"><div class="announcement-panel-header"><h2>Remove admin login</h2><p class="page-subtitle">This removes the current username and password. An owner-email code is required, and the login must be set up again afterward.</p></div><form id="admin-delete-form" class="announcement-form"><label>Email verification code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required /></label><div class="form-actions"><button class="btn-secondary" type="button" id="request-delete-code">Send code</button><button class="btn-danger" type="submit">Remove credentials</button></div></form></section>`;
+}
+
 function renderContacts() {
   const rows = state.contacts.map((contact) => `<article class="announcement-row"><div><div class="announcement-row-title">${escapeHtml(contact.label)} <span class="status ${contact.isActive ? 'active' : ''}">${contact.isActive ? 'Active' : 'Inactive'}</span></div><p>${escapeHtml(contact.type)} · ${escapeHtml(contact.value)}</p></div><div class="row-actions"><button class="btn-secondary" data-toggle-contact="${contact.id}">${contact.isActive ? 'Deactivate' : 'Activate'}</button><button class="btn-danger" data-delete-contact="${contact.id}">Delete</button></div></article>`).join('');
   return `<section class="panel"><div class="announcement-panel-header"><h2>Add contact option</h2><p class="page-subtitle">These options appear in the app Contact page.</p></div><form id="contact-form" class="announcement-form"><label>Contact type<select name="type"><option value="phone">Phone</option><option value="telegram">Telegram</option><option value="whatsapp">WhatsApp</option><option value="email">Email</option></select></label><label>Label<input name="label" maxlength="100" placeholder="Phone support" required /></label><label>Number, username, or email<input name="value" maxlength="255" placeholder="4656465543" required /></label><label>Display order<input name="displayOrder" type="number" min="0" value="0" /></label><label class="checkbox-label"><input name="isActive" type="checkbox" checked /> Active</label><button class="btn-primary" type="submit">Save Contact</button></form></section><section class="panel announcement-list"><div class="panel-toolbar"><strong>Contact options</strong><span class="count-badge">${state.contacts.length}</span></div>${state.loading ? '<div class="state-box">Loading contacts...</div>' : state.error ? `<div class="state-box error">${escapeHtml(state.error)}</div>` : rows || '<div class="state-box">No contact options yet.</div>'}</section>`;
@@ -342,6 +450,14 @@ function renderMatches() {
 }
 
 function renderPage() {
+  if (isStaffPanel && !state.adminToken) {
+    window.location.replace('/stuff-admin-panel/login.html');
+    return;
+  }
+  if (!state.adminToken || (!isStaffPanel && !state.adminAccount)) {
+    renderAuthPage();
+    return;
+  }
   
   const announcements = state.activeSection === 'announcements';
   const notifications = state.activeSection === 'notifications';
@@ -364,6 +480,13 @@ function renderPage() {
     const subtitle = main?.querySelector('.page-header .page-subtitle');
     if (heading) heading.textContent = 'Send Notification';
     if (subtitle) subtitle.textContent = 'Broadcast a push notification to registered mobile devices.';
+  }
+  if (state.activeSection === 'account') {
+    const main = appEl.querySelector('.main');
+    main?.querySelectorAll('.panel').forEach((panel) => panel.remove());
+    main?.querySelector('.page-header')?.insertAdjacentHTML('afterend', renderAdminAccount());
+    const heading = main?.querySelector('.page-header h1');
+    if (heading) heading.textContent = 'Admin account';
   }
   const sidebar = layout?.querySelector('.sidebar');
   const nav = appEl.querySelector('.nav');
@@ -411,7 +534,7 @@ function renderPage() {
     backdrop.addEventListener('click', closeNavigation);
   }
   if (nav) {
-    const sections = [
+    const sections = isStaffPanel ? [['matches', 'Match']] : [
       ['dashboard', 'Dashboard'],
       ['matches', 'Match'],
       ['users', 'Users'],
@@ -425,8 +548,9 @@ function renderPage() {
       ['notifications', 'Notification'],
       ['announcements', 'Announcements'],
       ['contacts', 'Contact'],
+      ['account', 'Admin account'],
     ];
-    nav.innerHTML = sections.map(([section, label]) => `<button class="nav-item ${state.activeSection === section ? 'active' : ''}" data-section="${section}">${label}</button>`).join('');
+    nav.innerHTML = `${sections.map(([section, label]) => `<button class="nav-item ${state.activeSection === section ? 'active' : ''}" data-section="${section}">${label}</button>`).join('')}<button class="nav-item nav-logout" id="sidebar-logout">Sign out</button>`;
   }
   const matchesNav = nav?.querySelector('[data-section="matches"]');
   const gamesNav = nav?.querySelector('[data-section="games"]');
@@ -561,6 +685,91 @@ function renderPage() {
       state.selectedResultPlayers = [];
       loadActiveSection();
     });
+  });
+
+  const signOut = async () => {
+    try {
+      await apiFetch(isStaffPanel ? '/api/staff/auth/logout' : '/api/admin/auth/logout', { method: 'POST' });
+    } catch {
+    }
+    clearAdminSession();
+    if (isStaffPanel) {
+      window.location.replace('/stuff-admin-panel/login.html');
+      return;
+    }
+    state.authView = 'login';
+    state.authMessage = '';
+    state.authError = '';
+    renderAuthPage();
+  };
+  document.getElementById('sidebar-logout')?.addEventListener('click', signOut);
+  document.getElementById('logout-btn')?.addEventListener('click', signOut);
+  document.getElementById('admin-change-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await apiFetch('/api/admin/auth/change', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword: form.get('currentPassword'), username: form.get('username'), password: form.get('password') }),
+      });
+      clearAdminSession();
+      state.adminStatus = { ...state.adminStatus, configured: true };
+      state.authView = 'login';
+      state.authMessage = 'Credentials updated. Sign in again.';
+      renderAuthPage();
+    } catch (error) {
+      state.error = error.message;
+      renderPage();
+    }
+  });
+  document.getElementById('staff-create-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await apiFetch('/api/admin/staff', {
+        method: 'POST',
+        body: JSON.stringify({ username: form.get('username'), password: form.get('password') }),
+      });
+      await loadAdminAccount();
+      state.error = null;
+    } catch (error) {
+      state.error = error.message;
+      renderPage();
+    }
+  });
+  document.querySelectorAll('[data-delete-staff]').forEach((button) => button.addEventListener('click', async () => {
+    if (!window.confirm('Remove this staff login? Their active sessions will stop working.')) return;
+    try {
+      await apiFetch(`/api/admin/staff/${button.dataset.deleteStaff}`, { method: 'DELETE' });
+      await loadAdminAccount();
+    } catch (error) {
+      state.error = error.message;
+      renderPage();
+    }
+  }));
+  document.getElementById('request-delete-code')?.addEventListener('click', async () => {
+    try {
+      const data = await adminAuthRequest('request-code', { purpose: 'delete' });
+      alert(data.message);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+  document.getElementById('admin-delete-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!window.confirm('Remove the admin login credentials?')) return;
+    const form = new FormData(event.currentTarget);
+    try {
+      await adminAuthRequest('delete', { purpose: 'delete', code: form.get('code') });
+      clearAdminSession();
+      state.adminStatus = { ...state.adminStatus, configured: false };
+      state.authView = 'setup';
+      state.authMessage = 'Admin credentials removed. Create a new login to continue.';
+      renderAuthPage();
+    } catch (error) {
+      state.error = error.message;
+      renderPage();
+    }
   });
 
   document.getElementById('announcement-form')?.addEventListener('submit', saveAnnouncement);
@@ -1065,10 +1274,17 @@ async function loadMatchCreatePage() {
   state.error = null;
   renderPage();
   try {
-    const [games, rules, matchBanners] = await Promise.all([apiFetch('/api/games'), apiFetch('/api/rules'), apiFetch('/api/match-banners')]);
-    state.games = games.games || [];
-    state.rules = rules.rules || [];
-    state.matchBanners = matchBanners.banners || [];
+    if (isStaffPanel) {
+      const options = await apiFetch('/api/staff/meta');
+      state.games = options.games || [];
+      state.rules = options.rules || [];
+      state.matchBanners = options.banners || [];
+    } else {
+      const [games, rules, matchBanners] = await Promise.all([apiFetch('/api/games'), apiFetch('/api/rules'), apiFetch('/api/match-banners')]);
+      state.games = games.games || [];
+      state.rules = rules.rules || [];
+      state.matchBanners = matchBanners.banners || [];
+    }
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -1084,8 +1300,17 @@ async function loadMatches() {
   try {
     const data = await apiFetch('/api/admin/matches');
     state.matches = data.matches || [];
-    if (!state.matchBanners.length) state.matchBanners = (await apiFetch('/api/match-banners')).banners || [];
-    if (!state.rules.length) state.rules = (await apiFetch('/api/rules')).rules || [];
+    if (isStaffPanel) {
+      if (!state.games.length || !state.matchBanners.length || !state.rules.length) {
+        const options = await apiFetch('/api/staff/meta');
+        state.games = options.games || [];
+        state.rules = options.rules || [];
+        state.matchBanners = options.banners || [];
+      }
+    } else {
+      if (!state.matchBanners.length) state.matchBanners = (await apiFetch('/api/match-banners')).banners || [];
+      if (!state.rules.length) state.rules = (await apiFetch('/api/rules')).rules || [];
+    }
     state.selectedMatchIds = new Set([...state.selectedMatchIds].filter((id) => state.matches.some((match) => match.id === id)));
   } catch (error) {
     state.error = error.message;
@@ -1107,6 +1332,7 @@ async function loadMatchDetails(id) {
 }
 
 function loadActiveSection() {
+  if (state.activeSection === 'account') return loadAdminAccount();
   if (state.activeSection === 'dashboard') return loadDashboard();
   if (state.activeSection === 'send-notification') { state.loading = false; state.error = null; return renderPage(); }
   if (state.activeSection === 'match-create') return loadMatchCreatePage();
@@ -1121,6 +1347,66 @@ function loadActiveSection() {
   if (state.activeSection === 'money') return loadDepositRequests();
   if (state.activeSection === 'withdraw') return loadWithdrawRequests();
   return loadUsers();
+}
+
+async function loadAdminAccount() {
+  state.loading = true;
+  state.error = null;
+  renderPage();
+  try {
+    const [account, staff] = await Promise.all([
+      apiFetch('/api/admin/auth/me'),
+      apiFetch('/api/admin/staff'),
+    ]);
+    state.adminAccount = account;
+    state.staffAccounts = staff.staff || [];
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    state.loading = false;
+    renderPage();
+  }
+}
+
+async function initializeAdminPanel() {
+  try {
+    if (isStaffPanel) {
+      if (!state.adminToken) {
+        window.location.replace('/stuff-admin-panel/login.html');
+        return;
+      }
+      const accountResponse = await fetch('/api/staff/auth/me', {
+        headers: { Authorization: `Bearer ${state.adminToken}` },
+      });
+      if (!accountResponse.ok) {
+        clearAdminSession();
+        window.location.replace('/stuff-admin-panel/login.html');
+        return;
+      }
+      state.adminAccount = await accountResponse.json();
+      state.activeSection = 'matches';
+      await loadActiveSection();
+      return;
+    }
+    const statusResponse = await fetch('/api/admin/auth/status');
+    state.adminStatus = await statusResponse.json();
+    if (state.adminToken) {
+      const accountResponse = await fetch('/api/admin/auth/me', {
+        headers: { Authorization: `Bearer ${state.adminToken}` },
+      });
+      if (accountResponse.ok) {
+        state.adminAccount = await accountResponse.json();
+        await loadActiveSection();
+        return;
+      }
+      clearAdminSession();
+    }
+    state.authView = state.adminStatus.configured ? 'login' : 'setup';
+    renderAuthPage();
+  } catch (error) {
+    state.authError = error.message || 'Could not load admin account status.';
+    renderAuthPage();
+  }
 }
 
 async function submitPushNotification(event) {
@@ -1409,4 +1695,4 @@ function render() {
   renderPage();
 }
 
-loadActiveSection();
+initializeAdminPanel();

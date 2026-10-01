@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BattleNext Staff Login</title>
+    <link rel="stylesheet" href="/stuff-admin-panel/staff.css" />
+    <script src="/stuff-admin-panel/login.js" defer></script>
+  </head>
+  <body class="login-page">
+    <main class="login-shell">
+      <section class="login-panel">
+        <div class="brand-mark" aria-hidden="true">B</div>
+        <p class="eyebrow">BATTLENEXT · STAFF</p>
+        <h1>Staff login</h1>
+        <form id="login-form">
+          <label
+            >Username<input name="username" autocomplete="username" required
+          /></label>
+          <label
+            >Password<input
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+          /></label>
+          <button class="button primary" type="submit">Sign in</button>
+          <p id="login-error" class="error-message" role="alert" hidden></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

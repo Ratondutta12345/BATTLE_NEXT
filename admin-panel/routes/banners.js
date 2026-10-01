@@ -5,10 +5,10 @@ const express = require('express');
 const multer = require('multer');
 const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
+const { getUploadDirectory, resolveUploadUrl } = require('../lib/uploads');
 
 const router = express.Router();
-const uploadDirectory = path.join(__dirname, '..', 'public', 'uploads', 'banners');
-fs.mkdirSync(uploadDirectory, { recursive: true });
+const uploadDirectory = getUploadDirectory('banners');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -143,7 +143,8 @@ router.delete('/:id', requireAdminKey, async (req, res) => {
     const [rows] = await pool.query('SELECT image_url FROM banners WHERE id = ?', [id]);
     if (!rows[0]) return res.status(404).json({ error: 'Banner not found' });
     await pool.query('DELETE FROM banners WHERE id = ?', [id]);
-    if (rows[0].image_url.startsWith('/uploads/')) fs.rmSync(path.join(__dirname, '..', 'public', rows[0].image_url), { force: true });
+    const imagePath = resolveUploadUrl(rows[0].image_url);
+    if (imagePath) fs.rmSync(imagePath, { force: true });
     res.json({ ok: true });
   } catch (error) {
     console.error('DELETE /api/banners/:id failed:', error);

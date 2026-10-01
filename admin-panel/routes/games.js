@@ -5,10 +5,10 @@ const express = require('express');
 const multer = require('multer');
 const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
+const { getUploadDirectory, resolveUploadUrl } = require('../lib/uploads');
 
 const router = express.Router();
-const uploadDirectory = path.join(__dirname, '..', 'public', 'uploads', 'games');
-fs.mkdirSync(uploadDirectory, { recursive: true });
+const uploadDirectory = getUploadDirectory('games');
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -121,7 +121,8 @@ router.put('/:id', requireAdminKey, upload.single('image'), async (req, res) => 
     if (fields.length) { values.push(id); await pool.query(`UPDATE games SET ${fields.join(', ')} WHERE id = ?`, values); }
     const [rows] = await pool.query(`${selectGames} WHERE id = ?`, [id]);
     if (req.file && existing[0].image_url.startsWith('/uploads/')) {
-      fs.rmSync(path.join(__dirname, '..', 'public', existing[0].image_url), { force: true });
+      const imagePath = resolveUploadUrl(existing[0].image_url);
+      if (imagePath) fs.rmSync(imagePath, { force: true });
     }
     res.json({ game: mapGame(rows[0]) });
   } catch (error) {
@@ -137,7 +138,8 @@ router.delete('/:id', requireAdminKey, async (req, res) => {
     const [rows] = await pool.query('SELECT image_url FROM games WHERE id = ?', [id]);
     if (!rows[0]) return res.status(404).json({ error: 'Game not found' });
     await pool.query('DELETE FROM games WHERE id = ?', [id]);
-    if (rows[0].image_url.startsWith('/uploads/')) fs.rmSync(path.join(__dirname, '..', 'public', rows[0].image_url), { force: true });
+    const imagePath = resolveUploadUrl(rows[0].image_url);
+    if (imagePath) fs.rmSync(imagePath, { force: true });
     res.json({ ok: true });
   } catch (error) {
     console.error('DELETE /api/games/:id failed:', error);

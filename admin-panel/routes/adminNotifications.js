@@ -1,15 +1,13 @@
 const express = require('express');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 const multer = require('multer');
 const pool = require('../lib/db');
 const { requireAdminKey } = require('../lib/adminAuth');
 const { sendPushNotification } = require('../lib/firebasePush');
+const { getUploadDirectory } = require('../lib/uploads');
 
 const router = express.Router();
-const uploadDirectory = path.join(__dirname, '..', 'public', 'uploads', 'notifications');
-fs.mkdirSync(uploadDirectory, { recursive: true });
+const uploadDirectory = getUploadDirectory('notifications');
 const upload = multer({
   storage: multer.diskStorage({
     destination: uploadDirectory,

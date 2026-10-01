@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../lib/db');
-const { requireAdminKey } = require('../lib/adminAuth');
+const { requireMatchAccess } = require('../lib/adminAuth');
 const { sendPushNotification } = require('../lib/firebasePush');
 
 const router = express.Router();
@@ -209,7 +209,7 @@ function validateMatchPayload(body) {
   };
 }
 
-router.get('/matches', requireAdminKey, async (req, res) => {
+router.get('/matches', requireMatchAccess, async (req, res) => {
   try {
     const slot = String(req.query.slot || '').trim();
     const [rows] = await pool.query(
@@ -223,7 +223,7 @@ router.get('/matches', requireAdminKey, async (req, res) => {
   }
 });
 
-router.get('/matches/:id', requireAdminKey, async (req, res) => {
+router.get('/matches/:id', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: 'Invalid match id' });
@@ -256,7 +256,7 @@ router.get('/matches/:id', requireAdminKey, async (req, res) => {
   }
 });
 
-router.post('/matches', requireAdminKey, async (req, res) => {
+router.post('/matches', requireMatchAccess, async (req, res) => {
   const payload = validateMatchPayload(req.body);
   if (!payload.valid) return res.status(400).json({ error: payload.errors[0] });
 
@@ -267,9 +267,9 @@ router.post('/matches', requireAdminKey, async (req, res) => {
         match_id, match_slot, game_id, game_name, game_version, event_name, match_url, match_schedule,
         prize_pool, per_kill, team_type, entry_fee, total_players, map_name,
         match_banner_id, rule_id, banner_id, room_description, prize_description, match_description,
-        private_description, match_type, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [rows[0].next_match_id, payload.matchSlot, payload.gameId, payload.gameName, payload.gameVersion, payload.eventName, payload.matchUrl, payload.matchSchedule, payload.prizePool, payload.perKill, payload.teamType, payload.entryFee, payload.totalPlayers, payload.mapName, payload.matchBannerId, payload.ruleId, null, payload.roomDescription, payload.prizeDescription, payload.matchDescription, payload.privateDescription, payload.matchType, payload.status],
+        private_description, match_type, status, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'Complete' THEN CURRENT_TIMESTAMP ELSE NULL END)`,
+      [rows[0].next_match_id, payload.matchSlot, payload.gameId, payload.gameName, payload.gameVersion, payload.eventName, payload.matchUrl, payload.matchSchedule, payload.prizePool, payload.perKill, payload.teamType, payload.entryFee, payload.totalPlayers, payload.mapName, payload.matchBannerId, payload.ruleId, null, payload.roomDescription, payload.prizeDescription, payload.matchDescription, payload.privateDescription, payload.matchType, payload.status, payload.status],
     );
     const [matchRows] = await pool.query(`${baseMatchSelect} WHERE m.id = ? GROUP BY m.id, g.id, b.id, mb.id`, [result.insertId]);
     res.status(201).json({ match: mapMatch(matchRows[0]), message: 'Match created successfully.' });
@@ -279,7 +279,7 @@ router.post('/matches', requireAdminKey, async (req, res) => {
   }
 });
 
-router.put('/matches/:id', requireAdminKey, async (req, res) => {
+router.put('/matches/:id', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: 'Invalid match id' });
@@ -304,7 +304,8 @@ router.put('/matches/:id', requireAdminKey, async (req, res) => {
         match_slot = ?, game_id = ?, game_name = ?, game_version = ?, event_name = ?, match_url = ?, match_schedule = ?,
         prize_pool = ?, per_kill = ?, team_type = ?, entry_fee = ?, total_players = ?,
         map_name = ?, match_banner_id = ?, rule_id = ?, banner_id = ?, room_description = ?, prize_description = ?,
-        match_description = ?, private_description = ?, match_type = ?, status = ?
+        match_description = ?, private_description = ?, match_type = ?, status = ?,
+        completed_at = CASE WHEN ? = 'Complete' AND ? <> 'Complete' THEN CURRENT_TIMESTAMP ELSE completed_at END
        WHERE id = ?`,
       [
         payload.matchSlot,
@@ -329,6 +330,8 @@ router.put('/matches/:id', requireAdminKey, async (req, res) => {
         payload.privateDescription,
         payload.matchType,
         payload.status,
+        payload.status,
+        existing[0].status,
         id,
       ],
     );
@@ -348,7 +351,7 @@ router.put('/matches/:id', requireAdminKey, async (req, res) => {
   }
 });
 
-router.delete('/matches/:id', requireAdminKey, async (req, res) => {
+router.delete('/matches/:id', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: 'Invalid match id' });
@@ -393,7 +396,7 @@ router.delete('/matches/:id', requireAdminKey, async (req, res) => {
   }
 });
 
-router.patch('/matches/:id/status', requireAdminKey, async (req, res) => {
+router.patch('/matches/:id/status', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   const status = normalizeStatus(req.body.status || req.body.match_status);
 
@@ -432,7 +435,12 @@ router.patch('/matches/:id/status', requireAdminKey, async (req, res) => {
         await connection.query(`UPDATE match_participants SET status = 'Refunded', result = 'Refunded' WHERE id = ?`, [participant.id]);
       }
     }
-    await connection.query('UPDATE matches SET status = ? WHERE id = ?', [status, id]);
+    await connection.query(
+      `UPDATE matches SET status = ?,
+       completed_at = CASE WHEN ? = 'Complete' AND ? <> 'Complete' THEN CURRENT_TIMESTAMP ELSE completed_at END
+       WHERE id = ?`,
+      [status, status, existing[0].status, id],
+    );
     const [rows] = await connection.query(
       `${baseMatchSelect} WHERE m.id = ? GROUP BY m.id, g.id, b.id, mb.id`,
       [id],
@@ -451,7 +459,7 @@ router.patch('/matches/:id/status', requireAdminKey, async (req, res) => {
   }
 });
 
-router.get('/matches/:id/players', requireAdminKey, async (req, res) => {
+router.get('/matches/:id/players', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: 'Invalid match id' });
@@ -472,7 +480,7 @@ router.get('/matches/:id/players', requireAdminKey, async (req, res) => {
   }
 });
 
-router.get('/matches/:id/result', requireAdminKey, async (req, res) => {
+router.get('/matches/:id/result', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid match id' });
 
@@ -496,7 +504,7 @@ router.get('/matches/:id/result', requireAdminKey, async (req, res) => {
   }
 });
 
-router.put('/matches/:id/result', requireAdminKey, async (req, res) => {
+router.put('/matches/:id/result', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   const players = Array.isArray(req.body.players) ? req.body.players : [];
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid match id' });
@@ -557,7 +565,7 @@ router.put('/matches/:id/result', requireAdminKey, async (req, res) => {
   }
 });
 
-router.patch('/matches/:id/room', requireAdminKey, async (req, res) => {
+router.patch('/matches/:id/room', requireMatchAccess, async (req, res) => {
   const id = Number(req.params.id);
   const roomId = cleanText(req.body.roomId || req.body.room_id);
   const roomPassword = cleanText(req.body.roomPassword || req.body.room_password);
@@ -610,7 +618,7 @@ router.patch('/matches/:id/room', requireAdminKey, async (req, res) => {
   }
 });
 
-router.post('/matches/:id/players', requireAdminKey, async (req, res) => {
+router.post('/matches/:id/players', requireMatchAccess, async (req, res) => {
   const matchId = Number(req.params.id);
   if (!Number.isInteger(matchId) || matchId <= 0) {
     return res.status(400).json({ error: 'Invalid match id' });
@@ -640,7 +648,7 @@ router.post('/matches/:id/players', requireAdminKey, async (req, res) => {
   }
 });
 
-router.delete('/matches/:id/players/:playerId', requireAdminKey, async (req, res) => {
+router.delete('/matches/:id/players/:playerId', requireMatchAccess, async (req, res) => {
   const matchId = Number(req.params.id);
   const playerId = Number(req.params.playerId);
 
