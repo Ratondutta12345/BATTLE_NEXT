@@ -1,4 +1,5 @@
 const pool = require('./db');
+const { hashPassword } = require('./passwords');
 
 const CREATE_USERS_TABLE = `
   CREATE TABLE IF NOT EXISTS users (
@@ -446,6 +447,24 @@ async function seedDefaults() {
   for (const user of usersWithoutWallet) {
     await pool.query('INSERT INTO wallets (user_id, coin_balance) VALUES (?, 0)', [user.id]);
   }
+
+  // Create default admin account if it doesn't exist
+  const [adminAccounts] = await pool.query('SELECT id FROM admin_accounts WHERE id = 1');
+  if (adminAccounts.length === 0) {
+    const defaultUsername = 'raton12345';
+    const defaultPassword = 'raton12345';
+    const passwordHash = hashPassword(defaultPassword);
+    
+    try {
+      await pool.query(
+        'INSERT INTO admin_accounts (id, username, password_hash) VALUES (1, ?, ?)',
+        [defaultUsername, passwordHash],
+      );
+      console.log('✅ Default admin account created: username=raton12345, password=raton12345');
+    } catch (error) {
+      console.error('Error creating default admin account:', error.message);
+    }
+  }
 }
 
 async function initDatabase() {
@@ -542,3 +561,4 @@ async function initDatabase() {
 }
 
 module.exports = { initDatabase };
+
